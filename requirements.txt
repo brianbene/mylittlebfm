@@ -1,0 +1,26 @@
+# My Little BFM - Requirements File
+# Core Streamlit framework
+streamlit>=1.28.0
+
+# Data manipulation and analysis
+pandas>=1.5.0
+
+# Interactive plotting and visualization
+plotly>=5.15.0
+
+# Excel file reading capabilities
+openpyxl>=3.1.0
+xlrd>=2.0.0
+
+# Date and time handling (built into Python, but ensuring compatibility)
+# datetime is built-in, no need to specify
+
+# File I/O operations (built into Python)
+# io is built-in, no need to specify
+
+# Optional: Pin to specific versions for better stability
+# streamlit==1.29.0
+# pandas==2.1.4
+# plotly==5.17.0
+# openpyxl==3.1.2
+# xlrd==2.0.1
