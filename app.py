@@ -410,27 +410,29 @@ if st.button("🚀 Calculate Analysis", type="primary"):
     current_month_rec = charging_strategy[0] if charging_strategy else None
     if current_month_rec:
         st.markdown("### 🎯 THIS MONTH'S CHARGING RECOMMENDATION")
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 2rem; border-radius: 15px; 
-                    box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 2px solid white;">
-            <h2>💳 CHARGE ALL LABOR TO: {current_month_rec['appn']}</h2>
-            <h3>{current_month_rec['urgency']}</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Monthly Target</h4>
-                    <h3>${monthly_personnel_cost:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Use Through</h4>
-                    <h3>{current_month_rec['end_date'].strftime('%b %Y')}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Days Until Expiry</h4>
-                    <h3>{(current_month_rec['expiry_date'] - report_datetime).days}</h3>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        # Current month recommendation card
+        current_rec_html = (
+            f'<div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 2rem; border-radius: 15px; '
+            f'box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 2px solid white;">'
+            f'<h2>💳 CHARGE ALL LABOR TO: {current_month_rec["appn"]}</h2>'
+            f'<h3>{current_month_rec["urgency"]}</h3>'
+            f'<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">'
+            f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+            f'<h4>Monthly Target</h4>'
+            f'<h3>${monthly_personnel_cost:,.0f}</h3>'
+            f'</div>'
+            f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+            f'<h4>Use Through</h4>'
+            f'<h3>{current_month_rec["end_date"].strftime("%b %Y")}</h3>'
+            f'</div>'
+            f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+            f'<h4>Days Until Expiry</h4>'
+            f'<h3>{(current_month_rec["expiry_date"] - report_datetime).days}</h3>'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+        )
+        st.markdown(current_rec_html, unsafe_allow_html=True)
     
     # Top 5 Chargeable Objects with expiry highlighting
     if top_cos:
@@ -448,15 +450,16 @@ if st.button("🚀 Calculate Analysis", type="primary"):
             else:
                 card_class = "status-card"
             
-            st.markdown(f"""
-            <div class="{card_class}" style="background: linear-gradient(135deg, #3498dbaa, #2980b9aa); 
-                        color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                <h4>#{i+1}: {co['CO_Number']} - {co['APPN']}</h4>
-                <p><strong>Balance:</strong> ${co['Balance']:,.0f}</p>
-                <p><strong>Expires:</strong> {expiry_date.strftime('%b %d, %Y')} ({days_to_expiry} days)</p>
-                <p><strong>Status:</strong> {urgency}</p>
-            </div>
-            """, unsafe_allow_html=True)
+            co_card_html = (
+                f'<div class="{card_class}" style="background: linear-gradient(135deg, #3498dbaa, #2980b9aa); '
+                f'color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">'
+                f'<h4>#{i+1}: {co["CO_Number"]} - {co["APPN"]}</h4>'
+                f'<p><strong>Balance:</strong> ${co["Balance"]:,.0f}</p>'
+                f'<p><strong>Expires:</strong> {expiry_date.strftime("%b %d, %Y")} ({days_to_expiry} days)</p>'
+                f'<p><strong>Status:</strong> {urgency}</p>'
+                f'</div>'
+            )
+            st.markdown(co_card_html, unsafe_allow_html=True)
     
     # Enhanced Appropriation Cards
     st.markdown("### 📅 Individual Appropriation Analysis")
@@ -481,30 +484,32 @@ if st.button("🚀 Calculate Analysis", type="primary"):
             hours_available_appn = balance / hourly_rate if hourly_rate > 0 else 0
             hours_excess_appn = hours_available_appn - hours_needed_to_dec30
             
-            st.markdown(f"""
-            <div class="status-card {card_class}" style="background: linear-gradient(135deg, {colors[appn]}aa, {colors[appn]}dd);">
-                <h3>{appn} Appropriation</h3>
-                <p><strong>Expires: {expiry.strftime('%b %d, %Y')}</strong></p>
-                <p>🕒 {days_left} days ({working_days} working days)</p>
-                <h4>${balance:,.0f}</h4>
-                <p>Personnel Months: {balance/monthly_personnel_cost:.1f}</p>
-                <p>L: ${l:,.0f} | M: ${m:,.0f} | T: ${t:,.0f}</p>
-                {f'<p style="font-weight: bold; animation: pulse 2s infinite;">🚨 EXPIRES SOON!</p>' if expiring_soon else ''}
-            </div>
-            """, unsafe_allow_html=True)
+            appn_card_html = (
+                f'<div class="status-card {card_class}" style="background: linear-gradient(135deg, {colors[appn]}aa, {colors[appn]}dd);">'
+                f'<h3>{appn} Appropriation</h3>'
+                f'<p><strong>Expires: {expiry.strftime("%b %d, %Y")}</strong></p>'
+                f'<p>🕒 {days_left} days ({working_days} working days)</p>'
+                f'<h4>${balance:,.0f}</h4>'
+                f'<p>Personnel Months: {balance/monthly_personnel_cost:.1f}</p>'
+                f'<p>L: ${l:,.0f} | M: ${m:,.0f} | T: ${t:,.0f}</p>'
+                f'{"<p style=\"font-weight: bold; animation: pulse 2s infinite;\">🚨 EXPIRES SOON!</p>" if expiring_soon else ""}'
+                f'</div>'
+            )
+            st.markdown(appn_card_html, unsafe_allow_html=True)
             
             # Individual hours analysis box for each appropriation
-            st.markdown(f"""
-            <div style="background: rgba(255,255,255,0.15); border: 2px solid {colors[appn]}; 
-                        border-radius: 10px; padding: 1rem; margin: 0.5rem 0; color: black;">
-                <h5 style="color: {colors[appn]}; margin: 0 0 0.5rem 0;">📊 {appn} Hours Analysis (to Dec 30)</h5>
-                <div style="display: grid; grid-template-columns: 1fr; gap: 0.3rem; font-size: 0.9em;">
-                    <div><strong>Hours Available:</strong> {hours_available_appn:,.0f}</div>
-                    <div><strong>Hours Needed:</strong> {hours_needed_to_dec30:,}</div>
-                    <div style="color: {'green' if hours_excess_appn >= 0 else 'red'};"><strong>Hours {'Excess' if hours_excess_appn >= 0 else 'Deficit'}:</strong> {abs(hours_excess_appn):,.0f}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            hours_box_html = (
+                f'<div style="background: rgba(255,255,255,0.15); border: 2px solid {colors[appn]}; '
+                f'border-radius: 10px; padding: 1rem; margin: 0.5rem 0; color: black;">'
+                f'<h5 style="color: {colors[appn]}; margin: 0 0 0.5rem 0;">📊 {appn} Hours Analysis (to Dec 30)</h5>'
+                f'<div style="display: grid; grid-template-columns: 1fr; gap: 0.3rem; font-size: 0.9em;">'
+                f'<div><strong>Hours Available:</strong> {hours_available_appn:,.0f}</div>'
+                f'<div><strong>Hours Needed:</strong> {hours_needed_to_dec30:,}</div>'
+                f'<div style="color: {"green" if hours_excess_appn >= 0 else "red"};"><strong>Hours {"Excess" if hours_excess_appn >= 0 else "Deficit"}:</strong> {abs(hours_excess_appn):,.0f}</div>'
+                f'</div>'
+                f'</div>'
+            )
+            st.markdown(hours_box_html, unsafe_allow_html=True)
     
     # Charts
     st.markdown("### 📈 Financial Visualizations")
