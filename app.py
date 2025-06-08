@@ -311,7 +311,94 @@ if st.button("🚀 Calculate Analysis", type="primary"):
                 <p><strong>💰 Funding:</strong> ${strategy['amount']:,.0f} | <strong>Remaining:</strong> ${strategy['remaining_balance']:,.0f}</p>
                 <p><strong>⏰ {strategy['appn']} Expires:</strong> {strategy['expiry_date'].strftime('%b %d, %Y')} ({(strategy['expiry_date'] - report_datetime).days} days)</p>
             </div>
-            """, unsafe_allow_html=True)
+    # Combined Analysis Box - Total to Dec 30
+    st.markdown("### 🎯 Combined Branch Coverage Analysis (to Dec 30)")
+    
+    # Calculate total combined metrics to Dec 30
+    working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
+    total_hours_needed_dec30 = working_days_to_dec30 * 8 * branch_size
+    total_hours_available_dec30 = total_balance / hourly_rate if hourly_rate > 0 else 0
+    total_hours_excess_dec30 = total_hours_available_dec30 - total_hours_needed_dec30
+    
+    # Calculate coverage percentage
+    coverage_pct_dec30 = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
+    
+    # Determine status color based on coverage
+    if coverage_pct_dec30 >= 100:
+        status_color = "#27ae60"  # Green
+        status_text = "✅ FULLY COVERED"
+        status_message = "Branch operations secured through Dec 30"
+    elif coverage_pct_dec30 >= 80:
+        status_color = "#f39c12"  # Orange
+        status_text = "⚠️ CAUTION"
+        status_message = "Adequate coverage but monitor closely"
+    else:
+        status_color = "#e74c3c"  # Red
+        status_text = "🚨 CRITICAL"
+        status_message = "Insufficient funding for full branch operations"
+    
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); 
+                color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
+        <h2>🎯 BRANCH OPERATIONS STATUS: {status_text}</h2>
+        <h3>{status_message}</h3>
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0;">
+            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
+                <h4>Total Funding</h4>
+                <h3>${total_balance:,.0f}</h3>
+            </div>
+            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
+                <h4>Hours Available</h4>
+                <h3>{total_hours_available_dec30:,.0f}</h3>
+            </div>
+            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
+                <h4>Hours Needed</h4>
+                <h3>{total_hours_needed_dec30:,}</h3>
+            </div>
+            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
+                <h4>Hours {'Excess' if total_hours_excess_dec30 >= 0 else 'Deficit'}</h4>
+                <h3 style="color: {'lightgreen' if total_hours_excess_dec30 >= 0 else 'lightcoral'};">{abs(total_hours_excess_dec30):,.0f}</h3>
+            </div>
+        </div>
+        <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
+            <h4>Branch Coverage to Dec 30: {coverage_pct_dec30:.1f}%</h4>
+            <p>Working Days Remaining: {working_days_to_dec30} | Branch Size: {branch_size} people</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Show breakdown by appropriation contribution
+    st.markdown("#### 📊 Funding Contribution Breakdown")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        omn_contribution = (omn_balance / total_balance * 100) if total_balance > 0 else 0
+        st.metric("OMN Contribution", f"{omn_contribution:.1f}%", f"${omn_balance:,.0f}")
+    
+    with col2:
+        opn_contribution = (opn_balance / total_balance * 100) if total_balance > 0 else 0
+        st.metric("OPN Contribution", f"{opn_contribution:.1f}%", f"${opn_balance:,.0f}")
+    
+    with col3:
+        scn_contribution = (scn_balance / total_balance * 100) if total_balance > 0 else 0
+        st.metric("SCN Contribution", f"{scn_contribution:.1f}%", f"${scn_balance:,.0f}")
+    
+    # Strategic recommendations based on combined analysis
+    if total_hours_excess_dec30 < 0:
+        shortfall_amount = abs(total_hours_excess_dec30) * hourly_rate
+        st.error(f"💰 **FUNDING SHORTFALL**: ${shortfall_amount:,.0f} additional funding needed for full branch operations through Dec 30")
+        
+        # Calculate what percentage of branch could be sustained
+        sustainable_percentage = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
+        sustainable_people = int(branch_size * sustainable_percentage / 100)
+        
+        st.warning(f"⚠️ **ALTERNATIVE**: Current funding can sustain {sustainable_people} people ({sustainable_percentage:.1f}% of branch) through Dec 30")
+        
+    elif total_hours_excess_dec30 > 0:
+        excess_amount = total_hours_excess_dec30 * hourly_rate
+        excess_months = total_hours_excess_dec30 / (8 * branch_size * 21.7)  # Average working days per month
+        
+        st.success(f"💡 **FUNDING SURPLUS**: ${excess_amount:,.0f} available for additional scope or {excess_months:.1f} extra months of operations")
     
     # CURRENT MONTH RECOMMENDATION
     current_month_rec = charging_strategy[0] if charging_strategy else None
@@ -382,6 +469,12 @@ if st.button("🚀 Calculate Analysis", type="primary"):
             card_class = "urgent-expiry" if expiring_soon else "normal-expiry"
             days_left = (expiry - report_datetime).days
             
+            # Calculate hours analysis for this appropriation to Dec 30
+            working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
+            hours_needed_to_dec30 = working_days_to_dec30 * 8 * branch_size
+            hours_available_appn = balance / hourly_rate if hourly_rate > 0 else 0
+            hours_excess_appn = hours_available_appn - hours_needed_to_dec30
+            
             st.markdown(f"""
             <div class="status-card {card_class}" style="background: linear-gradient(135deg, {colors[appn]}aa, {colors[appn]}dd);">
                 <h3>{appn} Appropriation</h3>
@@ -391,6 +484,19 @@ if st.button("🚀 Calculate Analysis", type="primary"):
                 <p>Personnel Months: {balance/monthly_personnel_cost:.1f}</p>
                 <p>L: ${l:,.0f} | M: ${m:,.0f} | T: ${t:,.0f}</p>
                 {f'<p style="font-weight: bold; animation: pulse 2s infinite;">🚨 EXPIRES SOON!</p>' if expiring_soon else ''}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Individual hours analysis box for each appropriation
+            st.markdown(f"""
+            <div style="background: rgba(255,255,255,0.15); border: 2px solid {colors[appn]}; 
+                        border-radius: 10px; padding: 1rem; margin: 0.5rem 0; color: black;">
+                <h5 style="color: {colors[appn]}; margin: 0 0 0.5rem 0;">📊 {appn} Hours Analysis (to Dec 30)</h5>
+                <div style="display: grid; grid-template-columns: 1fr; gap: 0.3rem; font-size: 0.9em;">
+                    <div><strong>Hours Available:</strong> {hours_available_appn:,.0f}</div>
+                    <div><strong>Hours Needed:</strong> {hours_needed_to_dec30:,}</div>
+                    <div style="color: {'green' if hours_excess_appn >= 0 else 'red'};"><strong>Hours {'Excess' if hours_excess_appn >= 0 else 'Deficit'}:</strong> {abs(hours_excess_appn):,.0f}</div>
+                </div>
             </div>
             """, unsafe_allow_html=True)
     
