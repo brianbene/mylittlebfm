@@ -390,6 +390,7 @@ if st.button("🚀 Calculate Analysis", type="primary"):
         st.metric("SCN Contribution", f"{scn_contribution:.1f}%", f"${scn_balance:,.0f}")
     
     # Strategic recommendations based on combined analysis
+        # Strategic recommendations based on combined analysis
     if total_hours_excess_dec30 < 0:
         shortfall_amount = abs(total_hours_excess_dec30) * hourly_rate
         st.error(f"💰 **FUNDING SHORTFALL**: ${shortfall_amount:,.0f} additional funding needed for full branch operations through Dec 30")
