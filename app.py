@@ -341,35 +341,35 @@ if st.button("🚀 Calculate Analysis", type="primary"):
     excess_deficit_text = "Excess" if total_hours_excess_dec30 >= 0 else "Deficit"
     excess_color = "lightgreen" if total_hours_excess_dec30 >= 0 else "lightcoral"
     
-    status_html = f"""
-    <div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); 
-                color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
-        <h2>🎯 BRANCH OPERATIONS STATUS: {status_text}</h2>
-        <h3>{status_message}</h3>
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0;">
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Total Funding</h4>
-                <h3>${total_balance:,.0f}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours Available</h4>
-                <h3>{total_hours_available_dec30:,.0f}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours Needed</h4>
-                <h3>{total_hours_needed_dec30:,}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours {excess_deficit_text}</h4>
-                <h3 style="color: {excess_color};">{abs(total_hours_excess_dec30):,.0f}</h3>
-            </div>
-        </div>
-        <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
-            <h4>Branch Coverage to Dec 30: {coverage_pct_dec30:.1f}%</h4>
-            <p>Working Days Remaining: {working_days_to_dec30} | Branch Size: {branch_size} people</p>
-        </div>
-    </div>
-    """
+    status_html = (
+        f'<div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); '
+        f'color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">'
+        f'<h2>🎯 BRANCH OPERATIONS STATUS: {status_text}</h2>'
+        f'<h3>{status_message}</h3>'
+        f'<div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0;">'
+        f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+        f'<h4>Total Funding</h4>'
+        f'<h3>${total_balance:,.0f}</h3>'
+        f'</div>'
+        f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+        f'<h4>Hours Available</h4>'
+        f'<h3>{total_hours_available_dec30:,.0f}</h3>'
+        f'</div>'
+        f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+        f'<h4>Hours Needed</h4>'
+        f'<h3>{total_hours_needed_dec30:,}</h3>'
+        f'</div>'
+        f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+        f'<h4>Hours {excess_deficit_text}</h4>'
+        f'<h3 style="color: {excess_color};">{abs(total_hours_excess_dec30):,.0f}</h3>'
+        f'</div>'
+        f'</div>'
+        f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px; margin: 1rem 0;">'
+        f'<h4>Branch Coverage to Dec 30: {coverage_pct_dec30:.1f}%</h4>'
+        f'<p>Working Days Remaining: {working_days_to_dec30} | Branch Size: {branch_size} people</p>'
+        f'</div>'
+        f'</div>'
+    )
     
     st.markdown(status_html, unsafe_allow_html=True)
     
