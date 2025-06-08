@@ -513,6 +513,371 @@ if st.button("🚀 Calculate Analysis", type="primary"):
                       annotation_text="100% Coverage Target")
         st.plotly_chart(fig2, use_container_width=True)
     
+    # Personnel Triage Analysis
+    st.markdown('<div class="bubble"><h3 style="text-align: center;">🎯 Personnel Coverage Triage Analysis</h3></div>', unsafe_allow_html=True)
+    
+    # Calculate personnel costs and coverage
+    months_remaining = max((earliest_expiry - report_datetime).days / 30.44, 0)  # More accurate month calculation
+    monthly_personnel_cost = hourly_rate * hours_per_week * 4.3 * branch_size * (1 + overhead_rate / 100)
+    total_personnel_needed = monthly_personnel_cost * months_remaining
+    
+    # Calculate appropriation-specific personnel coverage
+    omn_months_coverage = (omn_balance / monthly_personnel_cost) if monthly_personnel_cost > 0 else 0
+    opn_months_coverage = (opn_balance / monthly_personnel_cost) if monthly_personnel_cost > 0 else 0
+    scn_months_coverage = (scn_balance / monthly_personnel_cost) if monthly_personnel_cost > 0 else 0
+    total_months_coverage = (total_balance / monthly_personnel_cost) if monthly_personnel_cost > 0 else 0
+    
+    # Determine triage zone
+    coverage_ratio = total_months_coverage / months_remaining if months_remaining > 0 else float('inf')
+    
+    if coverage_ratio >= 1.5:
+        triage_zone = "GREEN"
+        zone_color = "#27ae60"
+        zone_message = "✅ EXCELLENT - Full personnel coverage with growth opportunity"
+    elif coverage_ratio >= 0.8:
+        triage_zone = "YELLOW" 
+        zone_color = "#f39c12"
+        zone_message = "⚠️ CAUTION - Adequate coverage but monitor closely"
+    else:
+        triage_zone = "RED"
+        zone_color = "#e74c3c"
+        zone_message = "🚨 CRITICAL - Insufficient personnel coverage, immediate action required"
+    
+    # Personnel Triage Dashboard
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, {zone_color}aa, {zone_color}dd); color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
+        <h2>🎯 PERSONNEL TRIAGE STATUS: {triage_zone} ZONE</h2>
+        <h3>{zone_message}</h3>
+        <p><strong>Coverage Ratio: {coverage_ratio:.1f}x</strong> | <strong>Total Coverage: {total_months_coverage:.1f} months</strong></p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Personnel metrics
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Monthly Personnel Cost", f"${monthly_personnel_cost:,.0f}")
+        st.metric("Months Until FY End", f"{months_remaining:.1f}")
+    
+    with col2:
+        st.metric("Total Personnel Needed", f"${total_personnel_needed:,.0f}")
+        st.metric("Personnel Coverage", f"{coverage_ratio:.1f}x")
+    
+    with col3:
+        st.metric("OMN Personnel Months", f"{omn_months_coverage:.1f}")
+        st.metric("OPN Personnel Months", f"{opn_months_coverage:.1f}")
+    
+    with col4:
+        st.metric("SCN Personnel Months", f"{scn_months_coverage:.1f}")
+        st.metric("Total Personnel Months", f"{total_months_coverage:.1f}")
+    
+    # Burn Order Strategy
+    st.markdown("### 🔥 Optimal Personnel Funding Strategy")
+    
+    # Calculate optimal burn order based on expiry dates
+    burn_order = []
+    if omn_balance > 0:
+        burn_order.append(("OMN", omn_balance, omn_months_coverage, omn_expiry, "Use FIRST - Expires soonest"))
+    if opn_balance > 0:
+        burn_order.append(("OPN", opn_balance, opn_months_coverage, opn_expiry, "Use SECOND - Medium duration"))
+    if scn_balance > 0:
+        burn_order.append(("SCN", scn_balance, scn_months_coverage, scn_expiry, "Use LAST - Longest duration"))
+    
+    # Sort by expiry date
+    burn_order.sort(key=lambda x: x[3])
+    
+    for i, (appn, balance, months, expiry, strategy) in enumerate(burn_order, 1):
+        urgency_icon = "🚨" if (expiry - report_datetime).days < 60 else "⚠️" if (expiry - report_datetime).days < 120 else "✅"
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, {'#e74c3c' if i==1 else '#f39c12' if i==2 else '#27ae60'}aa, {'#e74c3c' if i==1 else '#f39c12' if i==2 else '#27ae60'}dd); 
+                    color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
+            <h4>{urgency_icon} Step {i}: {appn} - ${balance:,.0f}</h4>
+            <p><strong>{strategy}</strong></p>
+            <p>Personnel Coverage: {months:.1f} months | Expires: {expiry.strftime('%b %d, %Y')}</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Personnel Triage Actions by Zone
+    st.markdown("### 🎯 Recommended Personnel Actions")
+    
+    if triage_zone == "GREEN":
+        st.success("**GREEN ZONE ACTIONS:**")
+        st.write("✅ Maintain current staffing levels")
+        st.write("✅ Consider growth opportunities or additional scope")
+        st.write("✅ Cross-train personnel for flexibility")
+        st.write("✅ Plan for next fiscal year expansion")
+        
+    elif triage_zone == "YELLOW":
+        st.warning("**YELLOW ZONE ACTIONS:**")
+        st.write("⚠️ Implement hiring freeze immediately")
+        st.write("⚠️ Defer all non-critical training and travel")
+        st.write("⚠️ Begin scope reduction discussions with stakeholders")
+        st.write("⚠️ Explore cost-sharing with other programs")
+        st.write("⚠️ Monitor weekly, prepare contingency plans")
+        
+    else:  # RED ZONE
+        st.error("**RED ZONE ACTIONS - IMMEDIATE:**")
+        st.write("🚨 **URGENT**: Stop all non-personnel spending immediately")
+        st.write("🚨 Calculate minimum essential staffing requirements")
+        st.write("🚨 Prepare emergency funding request")
+        st.write("🚨 Consider temporary personnel actions (furlough, reduction)")
+        st.write("🚨 Brief leadership immediately on critical situation")
+        
+        # Calculate shortfall
+        shortfall = total_personnel_needed - total_balance
+        if shortfall > 0:
+            st.error(f"💰 **FUNDING SHORTFALL**: ${shortfall:,.0f} needed for full personnel coverage")
+            
+            # Calculate minimum staffing options
+            max_sustainable_staff = int(total_balance / (hourly_rate * hours_per_week * 4.3 * months_remaining * (1 + overhead_rate / 100))) if months_remaining > 0 else branch_size
+            staff_reduction = branch_size - max_sustainable_staff
+            
+            if staff_reduction > 0:
+                st.error(f"⚠️ **PERSONNEL IMPACT**: May need to reduce staffing by {staff_reduction} positions to ensure continuity")
+                st.info(f"💡 **ALTERNATIVE**: Maximum sustainable staffing with current funding: {max_sustainable_staff} people")
+    
+    # Emergency Scenarios
+    if triage_zone in ["YELLOW", "RED"]:
+        st.markdown("### 🚨 Emergency Scenarios & Responses")
+        
+        # Calculate emergency timelines
+        if omn_balance > 0:
+            omn_runway = omn_balance / monthly_personnel_cost
+            st.warning(f"⏰ **OMN Emergency Timeline**: {omn_runway:.1f} months runway, must transition by {(report_datetime + timedelta(days=omn_runway*30)).strftime('%b %d, %Y')}")
+        
+        # 30-day survival calculation
+        survival_cost = monthly_personnel_cost
+        if total_balance < survival_cost:
+            st.error(f"🚨 **CRITICAL**: Insufficient funds for even 30-day personnel coverage")
+        else:
+            survival_months = total_balance / monthly_personnel_cost
+            st.info(f"🛡️ **Survival Mode**: Current funding supports {survival_months:.1f} months of personnel at full staffing")
+
+    # Smart APPN Charging Recommendations
+    st.markdown('<div class="bubble"><h3 style="text-align: center;">💡 Smart APPN Charging Strategy</h3><p style="text-align: center;">Optimized to use all funding before Dec 30 while maintaining branch operations</p></div>', unsafe_allow_html=True)
+    
+    # Calculate total funding needed through Dec 30
+    dec_30_date = datetime(fiscal_year, 12, 30)
+    months_to_dec30 = max((dec_30_date - report_datetime).days / 30.44, 0)
+    total_funding_needed_dec30 = monthly_personnel_cost * months_to_dec30
+    
+    # Create charging strategy based on expiry dates and balances
+    charging_strategy = []
+    remaining_need = total_funding_needed_dec30
+    
+    # Sort appropriations by expiry date (earliest first)
+    appn_data = [
+        ("OMN", omn_balance, omn_expiry, omn_months_coverage),
+        ("OPN", opn_balance, opn_expiry, opn_months_coverage), 
+        ("SCN", scn_balance, scn_expiry, scn_months_coverage)
+    ]
+    appn_data.sort(key=lambda x: x[2])  # Sort by expiry date
+    
+    cumulative_months = 0
+    
+    for appn, balance, expiry, months_coverage in appn_data:
+        if balance > 0 and remaining_need > 0:
+            # Calculate how much of this appropriation to use
+            months_from_this_appn = min(balance / monthly_personnel_cost, remaining_need / monthly_personnel_cost)
+            months_from_this_appn = min(months_from_this_appn, months_coverage)  # Don't exceed available
+            
+            if months_from_this_appn > 0:
+                amount_to_use = months_from_this_appn * monthly_personnel_cost
+                start_month = cumulative_months
+                end_month = cumulative_months + months_from_this_appn
+                
+                # Calculate dates
+                start_date = report_datetime + timedelta(days=start_month * 30.44)
+                end_date = report_datetime + timedelta(days=end_month * 30.44)
+                
+                # Determine urgency based on expiry date
+                days_until_expiry = (expiry - report_datetime).days
+                if days_until_expiry < 60:
+                    urgency = "🚨 URGENT"
+                    urgency_color = "#e74c3c"
+                elif days_until_expiry < 120:
+                    urgency = "⚠️ PRIORITY" 
+                    urgency_color = "#f39c12"
+                else:
+                    urgency = "✅ PLANNED"
+                    urgency_color = "#27ae60"
+                
+                charging_strategy.append({
+                    'appn': appn,
+                    'amount': amount_to_use,
+                    'months': months_from_this_appn,
+                    'start_date': start_date,
+                    'end_date': end_date,
+                    'expiry_date': expiry,
+                    'urgency': urgency,
+                    'urgency_color': urgency_color,
+                    'remaining_balance': balance - amount_to_use
+                })
+                
+                remaining_need -= amount_to_use
+                cumulative_months += months_from_this_appn
+    
+    # Display charging strategy
+    if charging_strategy:
+        st.markdown("### 📅 Month-by-Month Charging Plan")
+        
+        for i, strategy in enumerate(charging_strategy, 1):
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, {strategy['urgency_color']}aa, {strategy['urgency_color']}dd); 
+                        color: white; padding: 1.5rem; border-radius: 15px; margin: 1rem 0;">
+                <h4>Phase {i}: Charge to {strategy['appn']} {strategy['urgency']}</h4>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1rem 0;">
+                    <div>
+                        <p><strong>📅 Timeframe:</strong></p>
+                        <p>{strategy['start_date'].strftime('%b %d, %Y')} → {strategy['end_date'].strftime('%b %d, %Y')}</p>
+                        <p>({strategy['months']:.1f} months)</p>
+                    </div>
+                    <div>
+                        <p><strong>💰 Funding:</strong></p>
+                        <p>${strategy['amount']:,.0f}</p>
+                        <p>Remaining: ${strategy['remaining_balance']:,.0f}</p>
+                    </div>
+                </div>
+                <p><strong>⏰ {strategy['appn']} Expires:</strong> {strategy['expiry_date'].strftime('%b %d, %Y')} 
+                   ({(strategy['expiry_date'] - report_datetime).days} days from now)</p>
+            </div>
+            """, unsafe_allow_html=True)
+    
+    # Current Month Recommendation
+    current_month_rec = charging_strategy[0] if charging_strategy else None
+    if current_month_rec:
+        st.markdown("### 🎯 THIS MONTH'S CHARGING RECOMMENDATION")
+        st.markdown(f"""
+        <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 2rem; border-radius: 15px; 
+                    box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 2px solid white;">
+            <h2>💳 CHARGE ALL LABOR TO: {current_month_rec['appn']}</h2>
+            <h3>{current_month_rec['urgency']}</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
+                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
+                    <h4>Monthly Target</h4>
+                    <h3>${monthly_personnel_cost:,.0f}</h3>
+                </div>
+                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
+                    <h4>Use Through</h4>
+                    <h3>{current_month_rec['end_date'].strftime('%b %Y')}</h3>
+                </div>
+                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
+                    <h4>Days Until Expiry</h4>
+                    <h3>{(current_month_rec['expiry_date'] - report_datetime).days}</h3>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Funding Utilization Analysis
+    st.markdown("### 📊 Funding Utilization Through Dec 30")
+    
+    total_available = sum([balance for _, balance, _, _ in appn_data if balance > 0])
+    total_planned_usage = sum([s['amount'] for s in charging_strategy])
+    unutilized_funds = total_available - total_planned_usage
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total Available Funding", f"${total_available:,.0f}")
+        st.metric("Personnel Needed (Dec 30)", f"${total_funding_needed_dec30:,.0f}")
+    
+    with col2:
+        st.metric("Planned Personnel Usage", f"${total_planned_usage:,.0f}")
+        utilization_rate = (total_planned_usage / total_available * 100) if total_available > 0 else 0
+        st.metric("Personnel Utilization Rate", f"{utilization_rate:.1f}%")
+    
+    with col3:
+        st.metric("Unutilized Funds", f"${unutilized_funds:,.0f}")
+        if unutilized_funds > 0:
+            st.success("💡 Funds available for materials/travel")
+        else:
+            st.warning("⚠️ All funds needed for personnel")
+    
+    # Additional Recommendations for Unutilized Funds
+    if unutilized_funds > 0:
+        st.markdown("### 💡 Additional Spending Recommendations")
+        
+        # Calculate how much of each appropriation will be left
+        remaining_funds = []
+        for strategy in charging_strategy:
+            if strategy['remaining_balance'] > 1000:  # Only show significant amounts
+                remaining_funds.append((strategy['appn'], strategy['remaining_balance'], strategy['expiry_date']))
+        
+        if remaining_funds:
+            st.markdown("**Available for Materials, Travel, or Equipment:**")
+            for appn, remaining, expiry in remaining_funds:
+                days_left = (expiry - report_datetime).days
+                urgency_icon = "🚨" if days_left < 60 else "⚠️" if days_left < 120 else "✅"
+                
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #3498dbaa, #2980b9aa); color: white; 
+                            padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
+                    <h4>{urgency_icon} {appn}: ${remaining:,.0f} Available</h4>
+                    <p>Expires: {expiry.strftime('%b %d, %Y')} ({days_left} days)</p>
+                    <p><strong>Recommendation:</strong> {'Use immediately for critical equipment/materials' if days_left < 60 else 'Plan for training, travel, or equipment purchases'}</p>
+                </div>
+                """, unsafe_allow_html=True)
+    
+    # Calendar Integration
+    st.markdown("### 📅 Implementation Calendar")
+    
+    # Create a timeline view
+    timeline_data = []
+    for strategy in charging_strategy:
+        timeline_data.append({
+            'Phase': f"Phase {charging_strategy.index(strategy) + 1}",
+            'APPN': strategy['appn'],
+            'Start': strategy['start_date'].strftime('%Y-%m-%d'),
+            'End': strategy['end_date'].strftime('%Y-%m-%d'),
+            'Amount': f"${strategy['amount']:,.0f}",
+            'Monthly_Rate': f"${strategy['amount']/strategy['months']:,.0f}",
+            'Urgency': strategy['urgency']
+        })
+    
+    if timeline_data:
+        df_timeline = pd.DataFrame(timeline_data)
+        st.dataframe(df_timeline, use_container_width=True, hide_index=True)
+    
+    # Quick Reference Card
+    st.markdown("### 📋 Quick Reference for Finance Team")
+    
+    if current_month_rec:
+        st.markdown(f"""
+        <div style="background: #f8f9fa; border-left: 5px solid {current_month_rec['urgency_color']}; 
+                    padding: 1rem; border-radius: 5px; margin: 1rem 0;">
+            <h4>Current Charging Instructions:</h4>
+            <ul>
+                <li><strong>Primary APPN:</strong> {current_month_rec['appn']}</li>
+                <li><strong>Monthly Target:</strong> ${monthly_personnel_cost:,.0f}</li>
+                <li><strong>Use Through:</strong> {current_month_rec['end_date'].strftime('%B %Y')}</li>
+                <li><strong>Next Review Date:</strong> {(current_month_rec['end_date'] - timedelta(days=7)).strftime('%B %d, %Y')}</li>
+                <li><strong>Expiry Alert:</strong> {(current_month_rec['expiry_date'] - timedelta(days=30)).strftime('%B %d, %Y')}</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Export enhanced charging strategy
+    if charging_strategy:
+        strategy_export = []
+        for i, strategy in enumerate(charging_strategy, 1):
+            strategy_export.append({
+                'Phase': i,
+                'APPN': strategy['appn'],
+                'Start_Date': strategy['start_date'].strftime('%Y-%m-%d'),
+                'End_Date': strategy['end_date'].strftime('%Y-%m-%d'),
+                'Months': f"{strategy['months']:.1f}",
+                'Amount': strategy['amount'],
+                'Monthly_Rate': strategy['amount']/strategy['months'],
+                'Expiry_Date': strategy['expiry_date'].strftime('%Y-%m-%d'),
+                'Urgency': strategy['urgency'],
+                'Remaining_Balance': strategy['remaining_balance']
+            })
+        
+        # Add to session state for export
+        if 'charging_strategy' not in st.session_state:
+            st.session_state.charging_strategy = strategy_export
+
     # Enhanced Recommendations
     st.markdown('<div class="bubble"><h3 style="text-align: center;">📋 Strategic Recommendations</h3></div>', unsafe_allow_html=True)
     
@@ -688,22 +1053,52 @@ if st.button("🚀 Calculate Analysis", type="primary"):
     csv_buffer = io.StringIO()
     pd.DataFrame(export_data).to_csv(csv_buffer, index=False)
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.download_button(
-            "📊 Download Enhanced CSV Report", 
-            csv_buffer.getvalue(), 
-            f"BFM_Enhanced_Analysis_{selected_bl}_FY{fiscal_year}_{report_date.strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
-    
-    with col2:
-        st.download_button(
-            "📄 Download Detailed Expiry Report", 
-            report_text, 
-            f"BFM_Expiry_Report_{selected_bl}_FY{fiscal_year}_{report_date.strftime('%Y%m%d')}.txt",
-            mime="text/plain"
-        )
+    # Enhanced export with charging strategy
+    if 'charging_strategy' in st.session_state and st.session_state.charging_strategy:
+        strategy_csv_buffer = io.StringIO()
+        pd.DataFrame(st.session_state.charging_strategy).to_csv(strategy_csv_buffer, index=False)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.download_button(
+                "📊 Download Enhanced CSV Report", 
+                csv_buffer.getvalue(), 
+                f"BFM_Enhanced_Analysis_{selected_bl}_FY{fiscal_year}_{report_date.strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        
+        with col2:
+            st.download_button(
+                "📅 Download Charging Strategy", 
+                strategy_csv_buffer.getvalue(), 
+                f"BFM_Charging_Strategy_{selected_bl}_FY{fiscal_year}_{report_date.strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        
+        with col3:
+            st.download_button(
+                "📄 Download Detailed Expiry Report", 
+                report_text, 
+                f"BFM_Expiry_Report_{selected_bl}_FY{fiscal_year}_{report_date.strftime('%Y%m%d')}.txt",
+                mime="text/plain"
+            )
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                "📊 Download Enhanced CSV Report", 
+                csv_buffer.getvalue(), 
+                f"BFM_Enhanced_Analysis_{selected_bl}_FY{fiscal_year}_{report_date.strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+        
+        with col2:
+            st.download_button(
+                "📄 Download Detailed Expiry Report", 
+                report_text, 
+                f"BFM_Expiry_Report_{selected_bl}_FY{fiscal_year}_{report_date.strftime('%Y%m%d')}.txt",
+                mime="text/plain"
+            )
 
 # Footer
 st.markdown("---")
