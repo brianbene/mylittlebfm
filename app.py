@@ -337,7 +337,11 @@ if st.button("🚀 Calculate Analysis", type="primary"):
         status_text = "🚨 CRITICAL"
         status_message = "Insufficient funding for full branch operations"
     
-    st.markdown(f"""
+    # Create the status box HTML separately to avoid quote issues
+    excess_deficit_text = "Excess" if total_hours_excess_dec30 >= 0 else "Deficit"
+    excess_color = "lightgreen" if total_hours_excess_dec30 >= 0 else "lightcoral"
+    
+    status_html = f"""
     <div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); 
                 color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
         <h2>🎯 BRANCH OPERATIONS STATUS: {status_text}</h2>
@@ -356,8 +360,8 @@ if st.button("🚀 Calculate Analysis", type="primary"):
                 <h3>{total_hours_needed_dec30:,}</h3>
             </div>
             <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours {'Excess' if total_hours_excess_dec30 >= 0 else 'Deficit'}</h4>
-                <h3 style="color: {'lightgreen' if total_hours_excess_dec30 >= 0 else 'lightcoral'};">{abs(total_hours_excess_dec30):,.0f}</h3>
+                <h4>Hours {excess_deficit_text}</h4>
+                <h3 style="color: {excess_color};">{abs(total_hours_excess_dec30):,.0f}</h3>
             </div>
         </div>
         <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
@@ -365,7 +369,9 @@ if st.button("🚀 Calculate Analysis", type="primary"):
             <p>Working Days Remaining: {working_days_to_dec30} | Branch Size: {branch_size} people</p>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    
+    st.markdown(status_html, unsafe_allow_html=True)
     
     # Show breakdown by appropriation contribution
     st.markdown("#### 📊 Funding Contribution Breakdown")
