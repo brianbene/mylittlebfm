@@ -47,6 +47,7 @@ with st.sidebar:
     
     st.subheader("👨‍💼 PM Analysis")
     enable_pm_analysis = st.checkbox("Enable PM Analysis (BL16200 + Benedicks)", value=False)
+    show_column_inspector = st.checkbox("🔍 Show Column Inspector", value=False)
 
 def get_federal_holidays(fiscal_year):
     holidays = []
@@ -223,6 +224,80 @@ if 'pm_data' not in st.session_state:
     st.session_state.pm_data = None
 if 'pm_projects' not in st.session_state:
     st.session_state.pm_projects = []
+
+# Column Inspector Section (if enabled and file uploaded)
+if show_column_inspector and uploaded_file:
+    st.markdown("### 🔍 Excel Column Inspector")
+    st.info("This will help you identify which column contains the PM data")
+    
+    try:
+        df = pd.read_excel(uploaded_file, sheet_name='Consolidated Data', header=1)
+        
+        # Show column headers
+        st.markdown("#### 📋 Column Headers:")
+        headers_data = []
+        for i, col in enumerate(df.columns):
+            headers_data.append({'Column Index': i, 'Column Name': str(col)})
+        
+        headers_df = pd.DataFrame(headers_data)
+        st.dataframe(headers_df, use_container_width=True)
+        
+        # Show sample data for BL16200 entries
+        bl16200_sample = df[df.iloc[:, 8].astype(str).str.contains('BL16200', na=False)]
+        
+        if not bl16200_sample.empty:
+            st.markdown("#### 🎯 Sample BL16200 Data (First 5 rows):")
+            st.markdown("Look for columns that might contain 'Benedicks' or PM names")
+            
+            # Show first 5 rows with all columns
+            sample_display = bl16200_sample.head().copy()
+            
+            # Add column numbers as a header row for reference
+            col_refs = [f"Col_{i}" for i in range(len(sample_display.columns))]
+            
+            st.write("**Column Reference Numbers:**")
+            col_ref_df = pd.DataFrame([col_refs], columns=sample_display.columns)
+            st.dataframe(col_ref_df, use_container_width=True)
+            
+            st.write("**Sample Data:**")
+            st.dataframe(sample_display, use_container_width=True)
+            
+            # Check each column for potential PM data
+            st.markdown("#### 🕵️ PM Detection Analysis:")
+            potential_pm_columns = []
+            
+            for i, col in enumerate(df.columns):
+                if i < len(bl16200_sample.columns):
+                    col_data = bl16200_sample.iloc[:, i].astype(str).str.lower()
+                    benedicks_count = col_data.str.contains('benedicks', na=False).sum()
+                    
+                    if benedicks_count > 0:
+                        potential_pm_columns.append({
+                            'Column Index': i,
+                            'Column Name': str(col),
+                            'Benedicks Matches': benedicks_count,
+                            'Sample Values': ', '.join(col_data.dropna().unique()[:3])
+                        })
+            
+            if potential_pm_columns:
+                st.success("🎉 Found potential PM columns with 'Benedicks'!")
+                pm_df = pd.DataFrame(potential_pm_columns)
+                st.dataframe(pm_df, use_container_width=True)
+            else:
+                st.warning("⚠️ No columns found containing 'Benedicks'. Try expanding the search or check spelling.")
+                
+                # Show unique values from likely PM columns (columns 5-15)
+                st.markdown("#### 🔍 Checking columns 5-15 for PM-like data:")
+                for i in range(5, min(16, len(df.columns))):
+                    if i < len(bl16200_sample.columns):
+                        unique_vals = bl16200_sample.iloc[:, i].dropna().astype(str).unique()[:10]
+                        if len(unique_vals) > 0:
+                            st.write(f"**Column {i} ({df.columns[i]}):** {', '.join(unique_vals)}")
+        else:
+            st.warning("No BL16200 data found in the uploaded file.")
+            
+    except Exception as e:
+        st.error(f"Error inspecting file: {str(e)}")
 
 # PM Analysis Section (if enabled and file uploaded)
 if enable_pm_analysis and uploaded_file:
