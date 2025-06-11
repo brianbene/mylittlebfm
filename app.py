@@ -14,6 +14,7 @@ st.markdown("""
 .metric-card {background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 1.5rem; border-radius: 15px; color: white; text-align: center; margin: 0.5rem 0;}
 .bubble {background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 20px; padding: 1.5rem; margin: 1rem 0; border: 1px solid rgba(255,255,255,0.3);}
 .status-card {border-radius: 15px; padding: 1rem; text-align: center; margin: 0.5rem 0; color: white;}
+.pm-analysis-card {background: linear-gradient(135deg, #8e44ad, #9b59b6); color: white; padding: 1.5rem; border-radius: 15px; margin: 1rem 0; border: 2px solid #fff;}
 .urgent-expiry {background: linear-gradient(135deg, #e74c3c, #c0392b) !important; animation: pulse 2s infinite;}
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
@@ -43,6 +44,9 @@ with st.sidebar:
     st.subheader("🎯 Project")
     bl_codes = ['BL12200', 'BL10000', 'BL12000', 'BL12100', 'BL12300', 'BL16200', 'BL31100', 'BL41000']
     selected_bl = st.selectbox("BL Code", bl_codes)
+    
+    st.subheader("👨‍💼 PM Analysis")
+    enable_pm_analysis = st.checkbox("Enable PM Analysis (BL16200 + Benedicks)", value=False)
 
 def get_federal_holidays(fiscal_year):
     holidays = []
@@ -76,6 +80,94 @@ def get_appropriation_expiry_date(appn, fiscal_year):
 def is_expiring_soon(report_date, expiry_date, months=2):
     warning_date = report_date + timedelta(days=months * 30)
     return expiry_date <= warning_date
+
+def analyze_pm_data(file, pm_names=["benedicks", "benedicks/denovellis"]):
+    """
+    Analyze BL16200 entries with specific PM names
+    """
+    try:
+        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
+        
+        # Filter for BL16200 entries
+        bl16200_data = df[df.iloc[:, 8].astype(str).str.contains('BL16200', na=False)]
+        
+        if bl16200_data.empty:
+            return None, "No BL16200 data found", []
+        
+        # Assuming PM column is around column 9-12, we'll check multiple columns for PM info
+        # You may need to adjust these column indices based on your actual Excel structure
+        pm_columns = [9, 10, 11, 12]  # Common locations for PM data
+        
+        pm_filtered_data = pd.DataFrame()
+        
+        for col_idx in pm_columns:
+            if col_idx < len(df.columns):
+                for pm_name in pm_names:
+                    mask = bl16200_data.iloc[:, col_idx].astype(str).str.lower().str.contains(pm_name.lower(), na=False)
+                    pm_filtered_data = pd.concat([pm_filtered_data, bl16200_data[mask]], ignore_index=True)
+        
+        # Remove duplicates
+        pm_filtered_data = pm_filtered_data.drop_duplicates()
+        
+        if pm_filtered_data.empty:
+            return None, f"No BL16200 entries found with PM names: {', '.join(pm_names)}", []
+        
+        # Analyze the filtered data
+        result = {'omn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
+                 'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
+                 'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0}}
+        
+        pm_projects = []
+        
+        for _, row in pm_filtered_data.iterrows():
+            appn = str(row.iloc[2]).upper()
+            type_code = str(row.iloc[1]).upper().strip()
+            co_number = str(row.iloc[3]) if len(df.columns) > 3 else "Unknown"
+            
+            # Find PM name from the row
+            pm_name = "Unknown"
+            for col_idx in pm_columns:
+                if col_idx < len(df.columns):
+                    cell_value = str(row.iloc[col_idx]).lower()
+                    for pm in pm_names:
+                        if pm.lower() in cell_value:
+                            pm_name = str(row.iloc[col_idx])
+                            break
+                    if pm_name != "Unknown":
+                        break
+            
+            try:
+                balance = float(str(row.iloc[16]).replace('$', '').replace(',', '').strip() or 0)
+                
+                if balance > 0:
+                    pm_projects.append({
+                        'CO_Number': co_number, 
+                        'APPN': appn, 
+                        'Type': type_code, 
+                        'Balance': balance,
+                        'PM': pm_name
+                    })
+            except:
+                continue
+            
+            appn_key = 'omn' if 'OMN' in appn else 'scn' if 'SCN' in appn else 'opn'
+            result[appn_key]['balance'] += balance
+            
+            if type_code == 'L': result[appn_key]['L'] += balance
+            elif type_code == 'M': result[appn_key]['M'] += balance
+            elif type_code == 'T': result[appn_key]['T'] += balance
+            else:
+                result[appn_key]['L'] += balance * 0.6
+                result[appn_key]['M'] += balance * 0.3
+                result[appn_key]['T'] += balance * 0.1
+        
+        # Sort projects by balance
+        pm_projects = sorted(pm_projects, key=lambda x: x['Balance'], reverse=True)
+        
+        return result, f"✅ Found {len(pm_projects)} BL16200 projects with specified PMs", pm_projects
+        
+    except Exception as e:
+        return None, f"❌ Error analyzing PM data: {str(e)}", []
 
 def extract_vla_data(file, target_bl):
     try:
@@ -127,6 +219,90 @@ if 'last_bl_code' not in st.session_state:
     st.session_state.last_bl_code = None
 if 'top_cos' not in st.session_state:
     st.session_state.top_cos = []
+if 'pm_data' not in st.session_state:
+    st.session_state.pm_data = None
+if 'pm_projects' not in st.session_state:
+    st.session_state.pm_projects = []
+
+# PM Analysis Section (if enabled and file uploaded)
+if enable_pm_analysis and uploaded_file:
+    st.markdown("### 👨‍💼 PM Analysis: BL16200 + Benedicks Projects")
+    
+    # Analyze PM data
+    pm_data, pm_message, pm_projects = analyze_pm_data(uploaded_file)
+    st.session_state.pm_data = pm_data
+    st.session_state.pm_projects = pm_projects
+    
+    if pm_data:
+        st.success(pm_message)
+        
+        # Calculate totals for PM analysis
+        pm_total_balance = pm_data['omn']['balance'] + pm_data['opn']['balance'] + pm_data['scn']['balance']
+        
+        # Display PM Analysis Card
+        pm_card_html = (
+            f'<div class="pm-analysis-card">'
+            f'<h3>🎯 BL16200 + Benedicks PM Analysis</h3>'
+            f'<div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">'
+            f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+            f'<h4>Total Projects</h4>'
+            f'<h3>{len(pm_projects)}</h3>'
+            f'</div>'
+            f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+            f'<h4>Total Balance</h4>'
+            f'<h3>${pm_total_balance:,.0f}</h3>'
+            f'</div>'
+            f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+            f'<h4>Avg Project Size</h4>'
+            f'<h3>${pm_total_balance/len(pm_projects):,.0f}</h3>'
+            f'</div>'
+            f'<div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">'
+            f'<h4>Personnel Months</h4>'
+            f'<h3>{pm_total_balance/(hourly_rate * hours_per_week * 4.3 * (1 + overhead_rate / 100)):,.1f}</h3>'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+        )
+        st.markdown(pm_card_html, unsafe_allow_html=True)
+        
+        # Display PM projects breakdown
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown('<div class="metric-card"><h4>OMN - PM Projects</h4></div>', unsafe_allow_html=True)
+            st.write(f"**Balance:** ${pm_data['omn']['balance']:,.0f}")
+            st.write(f"**Labor:** ${pm_data['omn']['L']:,.0f}")
+            st.write(f"**Material:** ${pm_data['omn']['M']:,.0f}")
+            st.write(f"**Travel:** ${pm_data['omn']['T']:,.0f}")
+        
+        with col2:
+            st.markdown('<div class="metric-card"><h4>OPN - PM Projects</h4></div>', unsafe_allow_html=True)
+            st.write(f"**Balance:** ${pm_data['opn']['balance']:,.0f}")
+            st.write(f"**Labor:** ${pm_data['opn']['L']:,.0f}")
+            st.write(f"**Material:** ${pm_data['opn']['M']:,.0f}")
+            st.write(f"**Travel:** ${pm_data['opn']['T']:,.0f}")
+        
+        with col3:
+            st.markdown('<div class="metric-card"><h4>SCN - PM Projects</h4></div>', unsafe_allow_html=True)
+            st.write(f"**Balance:** ${pm_data['scn']['balance']:,.0f}")
+            st.write(f"**Labor:** ${pm_data['scn']['L']:,.0f}")
+            st.write(f"**Material:** ${pm_data['scn']['M']:,.0f}")
+            st.write(f"**Travel:** ${pm_data['scn']['T']:,.0f}")
+        
+        # Display individual PM projects
+        if pm_projects:
+            st.markdown("#### 📋 Individual PM Projects")
+            for i, project in enumerate(pm_projects[:10]):  # Show top 10
+                project_html = (
+                    f'<div style="background: linear-gradient(135deg, #3498dbaa, #2980b9aa); '
+                    f'color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">'
+                    f'<h5>#{i+1}: {project["CO_Number"]} - {project["APPN"]}</h5>'
+                    f'<p><strong>PM:</strong> {project["PM"]} | <strong>Type:</strong> {project["Type"]} | <strong>Balance:</strong> ${project["Balance"]:,.0f}</p>'
+                    f'</div>'
+                )
+                st.markdown(project_html, unsafe_allow_html=True)
+    else:
+        st.warning(pm_message)
 
 # Data Input Section - Auto-extract when BL code changes
 if uploaded_file:
@@ -524,6 +700,36 @@ if st.button("🚀 Calculate Analysis", type="primary"):
         fig2.update_layout(showlegend=False)
         st.plotly_chart(fig2, use_container_width=True)
     
+    # PM Analysis Charts (if enabled and data available)
+    if enable_pm_analysis and st.session_state.pm_data:
+        st.markdown("### 📊 PM Analysis Visualizations")
+        pm_data = st.session_state.pm_data
+        pm_projects = st.session_state.pm_projects
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # PM Projects by Appropriation
+            pm_balances = [pm_data['omn']['balance'], pm_data['opn']['balance'], pm_data['scn']['balance']]
+            fig3 = px.pie(values=pm_balances, names=['OMN', 'OPN', 'SCN'], 
+                         title="PM Projects Balance by Appropriation",
+                         color_discrete_map=colors)
+            st.plotly_chart(fig3, use_container_width=True)
+        
+        with col2:
+            # Top PM Projects
+            if pm_projects:
+                top_pm_projects = pm_projects[:5]
+                project_names = [f"{p['CO_Number']}" for p in top_pm_projects]
+                project_balances = [p['Balance'] for p in top_pm_projects]
+                
+                fig4 = px.bar(x=project_names, y=project_balances,
+                             title="Top 5 PM Projects by Balance",
+                             color=project_balances,
+                             color_continuous_scale='viridis')
+                fig4.update_layout(showlegend=False, xaxis_tickangle=-45)
+                st.plotly_chart(fig4, use_container_width=True)
+    
     # Export
     st.markdown("### 📤 Export Results")
     
@@ -537,6 +743,24 @@ if st.button("🚀 Calculate Analysis", type="primary"):
     csv_buffer = io.StringIO()
     pd.DataFrame(export_data).to_csv(csv_buffer, index=False)
     
+    # Export PM data if available
+    pm_export_available = False
+    if enable_pm_analysis and st.session_state.pm_projects:
+        pm_projects = st.session_state.pm_projects
+        pm_export_data = []
+        for project in pm_projects:
+            pm_export_data.append({
+                'CO_Number': project['CO_Number'],
+                'APPN': project['APPN'],
+                'Type': project['Type'],
+                'Balance': project['Balance'],
+                'PM': project['PM']
+            })
+        
+        pm_csv_buffer = io.StringIO()
+        pd.DataFrame(pm_export_data).to_csv(pm_csv_buffer, index=False)
+        pm_export_available = True
+    
     if charging_strategy:
         strategy_export = []
         for i, strategy in enumerate(charging_strategy, 1):
@@ -549,17 +773,38 @@ if st.button("🚀 Calculate Analysis", type="primary"):
         strategy_csv_buffer = io.StringIO()
         pd.DataFrame(strategy_export).to_csv(strategy_csv_buffer, index=False)
         
-        col1, col2 = st.columns(2)
-        with col1:
+        if pm_export_available:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
+                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
+            with col2:
+                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
+                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
+            with col3:
+                st.download_button("👨‍💼 Download PM Analysis", pm_csv_buffer.getvalue(),
+                                 f"PM_Analysis_BL16200_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
+                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
+            with col2:
+                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
+                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
+    else:
+        if pm_export_available:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
+                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
+            with col2:
+                st.download_button("👨‍💼 Download PM Analysis", pm_csv_buffer.getvalue(),
+                                 f"PM_Analysis_BL16200_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
+        else:
             st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
                              f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        with col2:
-            st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                             f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-    else:
-        st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                         f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
 
 # Footer
 st.markdown("---")
-st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging & Expiry Analysis</p></div>', unsafe_allow_html=True)
+st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging, Expiry Analysis & PM Analysis</p></div>', unsafe_allow_html=True)
