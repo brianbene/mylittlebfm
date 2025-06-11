@@ -955,6 +955,23 @@ st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BF
     except Exception as e:
         return None, f"❌ Error analyzing Benedicks portfolio: {str(e)}", [], key=lambda x: x['Balance'], reverse=True)
         
+        # Sort BL codes by balance
+        top_bl_codes = sorted(bl_code_summary.items(), key=lambda x: x[1]['balance'], reverse=True)[:10]
+        
+        total_balance = sum([result[key]['balance'] for key in result.keys()])
+        total_count = len(benedicks_projects)
+        
+        return {
+            'summary': result,
+            'projects': benedicks_projects,
+            'bl_codes': top_bl_codes,
+            'total_balance': total_balance,
+            'total_count': total_count
+        }, f"✅ Found {total_count} Benedicks projects (non-BL12200) worth ${total_balance:,.0f}", benedicks_projects
+        
+    except Exception as e:
+        return None, f"❌ Error analyzing Benedicks portfolio: {str(e)}", [], key=lambda x: x['Balance'], reverse=True)
+        
         return result, f"✅ Found {len(pm_projects)} BL16200 projects with specified PMs", pm_projects
         
     except Exception as e:
