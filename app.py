@@ -15,7 +15,7 @@ st.markdown("""
 .bubble {background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 20px; padding: 1.5rem; margin: 1rem 0; border: 1px solid rgba(255,255,255,0.3);}
 .status-card {border-radius: 15px; padding: 1rem; text-align: center; margin: 0.5rem 0; color: white;}
 .pm-analysis-card {background: linear-gradient(135deg, #8e44ad, #9b59b6); color: white; padding: 1.5rem; border-radius: 15px; margin: 1rem 0; border: 2px solid #fff;}
-.urgent-expiry {background: linear-gradient(135deg, #e74c3c, #c0392b) !important; animation: pulse 2s infinite;}
+.urgent-expiry {animation: pulse 2s infinite;}
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
   70% { box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
@@ -26,7 +26,7 @@ st.markdown("""
 
 st.markdown('<div class="main-header"><h1>🚀 My Little BFM</h1><p>Budget & Financial Management System</p></div>', unsafe_allow_html=True)
 
-# Sidebar
+# --- Sidebar Configuration ---
 with st.sidebar:
     st.header("⚙️ Configuration")
     uploaded_file = st.file_uploader("📊 Upload VLA Excel", type=['xlsx', 'xls'])
@@ -41,2559 +41,316 @@ with st.sidebar:
     st.subheader("📅 Fiscal Year")
     fiscal_year = st.selectbox("Select Fiscal Year", [2024, 2025, 2026, 2027], index=1)
     
-    st.subheader("🎯 Project")
+    st.subheader("🎯 Project Branch Analysis")
     bl_codes = ['BL12200', 'BL10000', 'BL12000', 'BL12100', 'BL12300', 'BL16200', 'BL31100', 'BL41000']
-    selected_bl = st.selectbox("BL Code", bl_codes)
+    selected_bl = st.selectbox("Select BL Code for Branch Analysis", bl_codes)
     
-    st.subheader("👨‍💼 Benedicks Analysis")
-    enable_pm_analysis = st.checkbox("Enable Benedicks Portfolio Analysis", value=False)
+    st.subheader("👨‍💼 PM Portfolio Analysis")
+    enable_pm_analysis = st.checkbox("Enable PM Portfolio Analysis", value=False)
+    pm_name_filter = st.text_input("PM Name to Analyze", value="Benedick")
+    personal_bl_filter = st.text_input("Your 'Home' BL Code", value="BL16200")
+    managed_bl_filter = st.text_input("Managed/Excluded BL Code", value="BL12200")
 
-def get_federal_holidays(fiscal_year):
-    holidays = []
-    if fiscal_year == 2025:
-        holidays = [datetime(2024, 10, 14), datetime(2024, 11, 11), datetime(2024, 11, 28), 
-                   datetime(2024, 11, 29), datetime(2024, 12, 25), datetime(2025, 1, 1),
-                   datetime(2025, 1, 20), datetime(2025, 2, 17), datetime(2025, 5, 26),
-                   datetime(2025, 6, 19), datetime(2025, 7, 4), datetime(2025, 9, 1)]
-    return holidays
 
-def count_working_days(start, end, fiscal_year):
-    holidays = get_federal_holidays(fiscal_year)
+# --- Core Logic Functions ---
+def get_federal_holidays(year):
+    # Expanded for multiple years, can be updated as needed
+    holidays = {
+        2024: [datetime(2024, 10, 14), datetime(2024, 11, 11), datetime(2024, 11, 28), datetime(2024, 12, 25)],
+        2025: [datetime(2025, 1, 1), datetime(2025, 1, 20), datetime(2025, 2, 17), datetime(2025, 5, 26),
+               datetime(2025, 6, 19), datetime(2025, 7, 4), datetime(2025, 9, 1), datetime(2024, 10, 14), 
+               datetime(2024, 11, 11), datetime(2024, 11, 28), datetime(2024, 12, 25)], # Includes FY25 holidays in calendar year 2024
+        2026: [datetime(2026, 1, 1), datetime(2026, 1, 19), datetime(2026, 2, 16), datetime(2026, 5, 25),
+               datetime(2026, 6, 19), datetime(2026, 7, 3), datetime(2026, 9, 7)]
+    }
+    return holidays.get(year, [])
+
+def count_working_days(start, end, fy):
+    holidays_start_year = get_federal_holidays(start.year)
+    holidays_end_year = get_federal_holidays(end.year)
+    holidays = list(set(holidays_start_year + holidays_end_year))
+    
     working_days = 0
     current = start
     while current <= end:
         if current.weekday() < 5 and current not in holidays:
             working_days += 1
-        current += pd.Timedelta(days=1)
+        current += timedelta(days=1)
     return working_days
 
-def get_appropriation_expiry_date(appn, fiscal_year):
+def get_appropriation_expiry_date(appn, fy):
     if 'OMN' in appn.upper():
-        return datetime(fiscal_year, 9, 30)
+        return datetime(fy, 9, 30)
     elif 'OPN' in appn.upper():
-        return datetime(fiscal_year, 11, 30)
+        return datetime(fy + 1, 9, 30) # OPN is typically a 2-year appropriation
     elif 'SCN' in appn.upper():
-        return datetime(fiscal_year, 12, 30)
+        return datetime(fy + 2, 9, 30) # SCN is typically a 3-year appropriation
     else:
-        return datetime(fiscal_year, 9, 30)
+        return datetime(fy, 9, 30)
 
-def is_expiring_soon(report_date, expiry_date, months=2):
-    warning_date = report_date + timedelta(days=months * 30)
-    return expiry_date <= warning_date
+def is_expiring_soon(report_dt, expiry_dt, months=2):
+    return expiry_dt <= report_dt + timedelta(days=months * 30.5)
 
-def analyze_personal_funding_portfolio(file):
+def analyze_pm_portfolio(file, pm_name, personal_bl, managed_bl):
     """
-    Analyze all funding associated with your PM name across different BL codes
-    - BL16200: Your personal branch funding
-    - Non-BL12200/Non-BL16200: Money given to other branches
-    - BL12200: Your managed branch (excluded from analysis)
+    Analyzes all funding associated with a specific PM name, categorizing it.
+    - Personal Branch: Funding under a specific BL code (e.g., BL16200).
+    - Other Branches: Funding given out to other departments.
+    - Managed Branch: A specific BL code to be excluded from totals (e.g., BL12200).
     """
+    if not pm_name:
+        return None, "❌ Please provide a PM Name in the sidebar for analysis.", []
+
     try:
         df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
         
-        # Filter for your PM entries (PM column is index 3)
-        your_pm_mask = df.iloc[:, 3].astype(str).str.lower().str.contains('benedick', na=False)
-        your_data = df[your_pm_mask]
+        # Consistent column names for clarity (assuming standard VLA format)
+        # It's safer to use names if the columns might shift
+        df.columns.values[1] = "Type"
+        df.columns.values[2] = "APPN"
+        df.columns.values[3] = "PM"
+        df.columns.values[5] = "Description"
+        df.columns.values[7] = "BL_Code"
+        df.columns.values[16] = "Balance"
+
+        pm_mask = df["PM"].astype(str).str.lower().str.contains(pm_name.lower(), na=False)
+        pm_data = df[pm_mask]
         
-        if your_data.empty:
-            return None, "No entries found for your PM name", []
+        if pm_data.empty:
+            return None, f"No entries found for PM '{pm_name}'", []
         
-        # Categorize by BL codes
-        bl16200_mask = your_data.iloc[:, 7].astype(str).str.contains('BL16200', na=False)
-        bl12200_mask = your_data.iloc[:, 7].astype(str).str.contains('BL12200', na=False)
+        # Categorize data
+        personal_mask = pm_data["BL_Code"].astype(str).str.contains(personal_bl, na=False)
+        managed_mask = pm_data["BL_Code"].astype(str).str.contains(managed_bl, na=False)
         
-        # Your personal funding (BL16200)
-        bl16200_data = your_data[bl16200_mask]
-        
-        # Funding you've given to other branches (not BL12200, not BL16200)
-        other_branches_data = your_data[~bl12200_mask & ~bl16200_mask]
-        
-        # Excluded BL12200 (your managed branch)
-        bl12200_data = your_data[bl12200_mask]
-        
-        # Analyze each category
         categories = {
-            'bl16200': {'data': bl16200_data, 'name': 'BL16200 (Your Branch)', 'description': 'Your personal branch funding'},
-            'other_branches': {'data': other_branches_data, 'name': 'Other Branches', 'description': 'Funding given to other departments'},
-            'bl12200': {'data': bl12200_data, 'name': 'BL12200 (Managed Branch)', 'description': 'Your managed branch (excluded from analysis)'}
+            'personal': {'data': pm_data[personal_mask], 'name': f'{personal_bl} (Your Home Branch)'},
+            'other': {'data': pm_data[~personal_mask & ~managed_mask], 'name': 'Other Branches (Funded by You)'},
+            'managed': {'data': pm_data[managed_mask], 'name': f'{managed_bl} (Managed Branch - Excluded)'}
         }
         
-        result = {}
+        results = {}
         all_projects = []
-        bl_code_breakdown = {}
+        other_bl_code_breakdown = {}
         
-        for category_key, category_info in categories.items():
-            category_data = category_info['data']
-            
-            # Initialize category results
-            result[category_key] = {
-                'omn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-                'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-                'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-                'other': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-                'total_balance': 0.0,
-                'total_count': 0,
-                'projects': [],
-                'bl_codes': {}
+        for cat_key, cat_info in categories.items():
+            cat_data = cat_info['data']
+            results[cat_key] = {
+                'omn': {'balance': 0.0, 'count': 0}, 'opn': {'balance': 0.0, 'count': 0},
+                'scn': {'balance': 0.0, 'count': 0}, 'other': {'balance': 0.0, 'count': 0},
+                'total_balance': 0.0, 'total_count': 0, 'projects': []
             }
-            
-            for _, row in category_data.iterrows():
-                appn = str(row.iloc[2]).upper() if len(df.columns) > 2 else "Unknown"
-                type_code = str(row.iloc[1]).upper().strip() if len(df.columns) > 1 else "Unknown"
-                pm_name = str(row.iloc[3]) if len(df.columns) > 3 else "Unknown"
-                bl_code = str(row.iloc[7]) if len(df.columns) > 7 else "Unknown"
-                project_desc = str(row.iloc[5]) if len(df.columns) > 5 else "Unknown"
-                
+
+            for _, row in cat_data.iterrows():
                 try:
-                    balance_str = str(row.iloc[16]).replace('
-    """
-    Analyze all Benedicks entries that are NOT BL12200
-    """
-    try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
+                    balance_str = str(row["Balance"]).replace('$', '').replace(',', '').strip()
+                    balance = float(balance_str) if balance_str and balance_str.lower() != 'nan' else 0.0
+                    if balance == 0: continue
+
+                    project_info = {
+                        'PM': row["PM"], 'APPN': row["APPN"], 'Type': row["Type"], 'Balance': balance,
+                        'BL_Code': row["BL_Code"], 'Description': row["Description"], 'Category': cat_info['name']
+                    }
+                    results[cat_key]['projects'].append(project_info)
+                    if cat_key != 'managed':
+                         all_projects.append(project_info)
+
+                    # Determine appropriation category
+                    appn = str(row["APPN"]).upper()
+                    if 'OMN' in appn: appn_key = 'omn'
+                    elif 'SCN' in appn: appn_key = 'scn'
+                    elif 'OPN' in appn: appn_key = 'opn'
+                    else: appn_key = 'other'
+
+                    results[cat_key][appn_key]['balance'] += balance
+                    results[cat_key][appn_key]['count'] += 1
+                    results[cat_key]['total_balance'] += balance
+                    results[cat_key]['total_count'] += 1
+
+                    # Track BL code breakdown for 'other' category
+                    if cat_key == 'other':
+                        bl_code = row["BL_Code"]
+                        if bl_code not in other_bl_code_breakdown:
+                            other_bl_code_breakdown[bl_code] = {'balance': 0.0, 'count': 0}
+                        other_bl_code_breakdown[bl_code]['balance'] += balance
+                        other_bl_code_breakdown[bl_code]['count'] += 1
+
+                except (ValueError, TypeError) as e:
+                    st.warning(f"Skipping a row in PM analysis due to data issue: {e}")
+                    continue
         
-        # Filter for Benedicks entries (PM column is index 3)
-        benedicks_mask = df.iloc[:, 3].astype(str).str.lower().str.contains('benedick', na=False)
-        benedicks_data = df[benedicks_mask]
+        sorted_projects = sorted(all_projects, key=lambda x: x['Balance'], reverse=True)
+        sorted_bl_codes = sorted(other_bl_code_breakdown.items(), key=lambda x: x[1]['balance'], reverse=True)
         
-        if benedicks_data.empty:
-            return None, "No Benedicks entries found", []
-        
-        # Exclude BL12200 entries (Billing Element column is index 7)
-        non_bl12200_mask = ~benedicks_data.iloc[:, 7].astype(str).str.contains('BL12200', na=False)
-        filtered_data = benedicks_data[non_bl12200_mask]
-        
-        if filtered_data.empty:
-            return None, "All Benedicks entries are BL12200", []
-        
-        # Analyze the data structure
-        result = {
-            'omn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-            'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-            'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-            'other': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0}
+        total_portfolio_balance = results['personal']['total_balance'] + results['other']['total_balance']
+        total_portfolio_count = results['personal']['total_count'] + results['other']['total_count']
+
+        final_result = {
+            'categories': results,
+            'all_projects': sorted_projects,
+            'other_bl_code_breakdown': sorted_bl_codes,
+            'total_portfolio_balance': total_portfolio_balance,
+            'total_portfolio_count': total_portfolio_count,
         }
         
-        benedicks_projects = []
-        bl_code_summary = {}
-        
-        for _, row in filtered_data.iterrows():
-            appn = str(row.iloc[2]).upper() if len(df.columns) > 2 else "Unknown"
-            type_code = str(row.iloc[1]).upper().strip() if len(df.columns) > 1 else "Unknown"
-            pm_name = str(row.iloc[3]) if len(df.columns) > 3 else "Unknown"
-            bl_code = str(row.iloc[7]) if len(df.columns) > 7 else "Unknown"
-            project_desc = str(row.iloc[5]) if len(df.columns) > 5 else "Unknown"
-            
-            try:
-                balance_str = str(row.iloc[16]).replace('
-                
-                # Track individual projects
-                benedicks_projects.append({
-                    'PM': pm_name,
-                    'APPN': appn,
-                    'Type': type_code,
-                    'Balance': balance,
-                    'BL_Code': bl_code,
-                    'Description': project_desc
-                })
-                
-                # Track BL code summaries
-                if bl_code not in bl_code_summary:
-                    bl_code_summary[bl_code] = {'balance': 0.0, 'count': 0, 'types': {}}
-                bl_code_summary[bl_code]['balance'] += balance
-                bl_code_summary[bl_code]['count'] += 1
-                
-                if type_code not in bl_code_summary[bl_code]['types']:
-                    bl_code_summary[bl_code]['types'][type_code] = {'balance': 0.0, 'count': 0}
-                bl_code_summary[bl_code]['types'][type_code]['balance'] += balance
-                bl_code_summary[bl_code]['types'][type_code]['count'] += 1
-                
-            except:
-                balance = 0.0
-                continue
-            
-            # Determine appropriation category
-            if 'OMN' in appn:
-                appn_key = 'omn'
-            elif 'SCN' in appn:
-                appn_key = 'scn'
-            elif 'OPN' in appn:
-                appn_key = 'opn'
-            else:
-                appn_key = 'other'
-            
-            result[appn_key]['balance'] += balance
-            result[appn_key]['count'] += 1
-            
-            # Distribute by type
-            if type_code == 'L':
-                result[appn_key]['L'] += balance
-            elif type_code == 'M':
-                result[appn_key]['M'] += balance
-            elif type_code == 'T':
-                result[appn_key]['T'] += balance
-            else:
-                # If type is unclear, distribute proportionally
-                result[appn_key]['L'] += balance * 0.6
-                result[appn_key]['M'] += balance * 0.3
-                result[appn_key]['T'] += balance * 0.1
-        
-        # Sort projects by balance
-        benedicks_projects = sorted(benedicks_projects, key=lambda x: x['Balance'], reverse=True)
-        
-        # Sort BL codes by balance
-        top_bl_codes = sorted(bl_code_summary.items(), key=lambda x: x[1]['balance'], reverse=True)[:10]
-        
-        total_balance = sum([result[key]['balance'] for key in result.keys()])
-        total_count = len(benedicks_projects)
-        
-        return {
-            'summary': result,
-            'projects': benedicks_projects,
-            'bl_codes': top_bl_codes,
-            'total_balance': total_balance,
-            'total_count': total_count
-        }, f"✅ Found {total_count} Benedicks projects (non-BL12200) worth ${total_balance:,.0f}", benedicks_projects
-        
+        message = f"✅ Found {total_portfolio_count} projects for PM '{pm_name}' worth ${total_portfolio_balance:,.0f} (excluding {managed_bl})."
+        return final_result, message, sorted_projects
+
     except Exception as e:
-        return None, f"❌ Error analyzing Benedicks portfolio: {str(e)}", []
+        return None, f"❌ Error analyzing PM portfolio: {str(e)}", []
+
 
 def extract_vla_data(file, target_bl):
+    """Extracts financial data for a specific BL code."""
     try:
         df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
-        bl_data = df[df.iloc[:, 8].astype(str).str.contains(target_bl, na=False)]
+        # Use column index 7 for 'Billing Element' consistently
+        bl_data = df[df.iloc[:, 7].astype(str).str.contains(target_bl, na=False)]
         
         if bl_data.empty:
-            return None, f"No data found for {target_bl}", []
+            return None, f"No data found for BL Code {target_bl}", []
         
         result = {'omn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
-                 'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
-                 'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0}}
+                  'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
+                  'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0}}
         
         chargeable_objects = []
         
         for _, row in bl_data.iterrows():
-            appn = str(row.iloc[2]).upper()
-            type_code = str(row.iloc[1]).upper().strip()
-            co_number = str(row.iloc[3]) if len(df.columns) > 3 else "Unknown"
-            
-            try:
-                balance = float(str(row.iloc[16]).replace('$', '').replace(',', '').strip() or 0)
-                
-                if balance > 0:
-                    chargeable_objects.append({'CO_Number': co_number, 'APPN': appn, 'Type': type_code, 'Balance': balance})
-            except:
-                continue
-            
-            appn_key = 'omn' if 'OMN' in appn else 'scn' if 'SCN' in appn else 'opn'
-            result[appn_key]['balance'] += balance
-            
-            if type_code == 'L': result[appn_key]['L'] += balance
-            elif type_code == 'M': result[appn_key]['M'] += balance
-            elif type_code == 'T': result[appn_key]['T'] += balance
-            else:
-                result[appn_key]['L'] += balance * 0.6
-                result[appn_key]['M'] += balance * 0.3
-                result[appn_key]['T'] += balance * 0.1
-        
-        top_cos = sorted(chargeable_objects, key=lambda x: x['Balance'], reverse=True)[:5]
-        return result, f"✅ Extracted data for {target_bl}", top_cos
-    except Exception as e:
-        return None, f"❌ Error: {str(e)}", []
-
-# Initialize session state
-if 'extracted_data' not in st.session_state:
-    st.session_state.extracted_data = None
-if 'last_bl_code' not in st.session_state:
-    st.session_state.last_bl_code = None
-if 'top_cos' not in st.session_state:
-    st.session_state.top_cos = []
-if 'benedicks_data' not in st.session_state:
-    st.session_state.benedicks_data = None
-if 'benedicks_projects' not in st.session_state:
-    st.session_state.benedicks_projects = []
-if 'personal_funding_data' not in st.session_state:
-    st.session_state.personal_funding_data = None
-
-# Personal Funding Analysis Section (if enabled and file uploaded)
-if enable_personal_funding and uploaded_file:
-    st.markdown("### 💼 Personal Funding Portfolio Analysis")
-    
-    # Analyze personal funding data
-    personal_analysis, personal_message, personal_projects = analyze_personal_funding_portfolio(uploaded_file)
-    st.session_state.personal_funding_data = personal_analysis
-    
-    if personal_analysis:
-        st.success(personal_message)
-        
-        # Main Portfolio Overview
-        total_available = personal_analysis['total_available_funding']
-        bl16200_funding = personal_analysis['bl16200_funding']
-        other_branches_funding = personal_analysis['other_branches_funding']
-        bl12200_funding = personal_analysis['bl12200_funding']
-        total_projects = personal_analysis['total_projects']
-        
-        # Portfolio Overview Card
-        st.markdown(f"""
-        <div class="pm-analysis-card">
-            <h3>💼 Your Complete Funding Portfolio</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Available Funding</h4>
-                    <h3>${total_available:,.0f}</h3>
-                    <small>(Excluding BL12200)</small>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>BL16200 (Your Branch)</h4>
-                    <h3>${bl16200_funding:,.0f}</h3>
-                    <small>{bl16200_funding/total_available*100:.1f}% of total</small>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Other Branches</h4>
-                    <h3>${other_branches_funding:,.0f}</h3>
-                    <small>{other_branches_funding/total_available*100:.1f}% of total</small>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>BL12200 (Managed)</h4>
-                    <h3>${bl12200_funding:,.0f}</h3>
-                    <small>Excluded from analysis</small>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Detailed Breakdown by Category
-        categories = personal_analysis['categories']
-        
-        st.markdown("#### 📊 Funding Breakdown by Category")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("##### 🎯 BL16200 (Your Personal Branch)")
-            bl16200_cat = categories['bl16200']
-            st.write(f"**Projects:** {bl16200_cat['total_count']}")
-            st.write(f"**Total Balance:** ${bl16200_cat['total_balance']:,.0f}")
-            
-            if bl16200_cat['total_count'] > 0:
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    st.metric("OMN", f"${bl16200_cat['omn']['balance']:,.0f}", f"{bl16200_cat['omn']['count']} projects")
-                with col_b:
-                    st.metric("OPN", f"${bl16200_cat['opn']['balance']:,.0f}", f"{bl16200_cat['opn']['count']} projects")
-                with col_c:
-                    st.metric("SCN", f"${bl16200_cat['scn']['balance']:,.0f}", f"{bl16200_cat['scn']['count']} projects")
-        
-        with col2:
-            st.markdown("##### 🏢 Other Branches (Money Given Out)")
-            other_cat = categories['other_branches']
-            st.write(f"**Projects:** {other_cat['total_count']}")
-            st.write(f"**Total Balance:** ${other_cat['total_balance']:,.0f}")
-            
-            if other_cat['total_count'] > 0:
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    st.metric("OMN", f"${other_cat['omn']['balance']:,.0f}", f"{other_cat['omn']['count']} projects")
-                with col_b:
-                    st.metric("OPN", f"${other_cat['opn']['balance']:,.0f}", f"{other_cat['opn']['count']} projects")
-                with col_c:
-                    st.metric("SCN", f"${other_cat['scn']['balance']:,.0f}", f"{other_cat['scn']['count']} projects")
-        
-        # BL Code Breakdown for Other Branches
-        if personal_analysis['bl_code_breakdown']:
-            st.markdown("#### 🏗️ Other Branches - BL Code Breakdown")
-            st.info("💡 These are departments where you've allocated funding. Monitor these to see if you need to pull money back.")
-            
-            for i, (bl_code, bl_data) in enumerate(personal_analysis['bl_code_breakdown'][:8]):
-                percentage_of_other = (bl_data['balance'] / other_branches_funding * 100) if other_branches_funding > 0 else 0
-                
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #34495eaa, #2c3e50aa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {bl_code}</h5>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
-                        <div><strong>Balance:</strong> ${bl_data["balance"]:,.0f}</div>
-                        <div><strong>Projects:</strong> {bl_data["count"]}</div>
-                        <div><strong>% of Other Funding:</strong> {percentage_of_other:.1f}%</div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Strategic Analysis
-        st.markdown("#### 🎯 Strategic Funding Analysis")
-        
-        # Calculate funding adequacy
-        if bl16200_funding > other_branches_funding:
-            funding_status = "✅ GOOD POSITION"
-            status_color = "#27ae60"
-            status_message = "You have more funding in your branch than given to others"
-        elif bl16200_funding > other_branches_funding * 0.8:
-            funding_status = "⚠️ MONITOR CLOSELY"
-            status_color = "#f39c12"
-            status_message = "Funding levels are balanced but monitor other branches"
-        else:
-            funding_status = "🚨 CONSIDER REALLOCATION"
-            status_color = "#e74c3c"
-            status_message = "You may need to pull funding from other branches"
-        
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
-            <h2>💰 FUNDING STATUS: {funding_status}</h2>
-            <h3>{status_message}</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Your Branch Ratio</h4>
-                    <h3>{bl16200_funding/total_available*100:.1f}%</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Other Branches Ratio</h4>
-                    <h3>{other_branches_funding/total_available*100:.1f}%</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Potential to Reclaim</h4>
-                    <h3>${other_branches_funding:,.0f}</h3>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Top Personal Projects
-        if personal_projects:
-            st.markdown("#### 🏆 Top Personal Projects (All Categories)")
-            for i, project in enumerate(personal_projects[:8]):
-                category_color = "#3498db" if "BL16200" in project['Category'] else "#e67e22"
-                
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, {category_color}aa, {category_color}dd); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {project["BL_Code"]} ({project["Category"]})</h5>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
-                        <div><strong>APPN:</strong> {project["APPN"]}</div>
-                        <div><strong>Type:</strong> {project["Type"]}</div>
-                        <div><strong>Balance:</strong> ${project["Balance"]:,.0f}</div>
-                    </div>
-                    <p style="margin-top: 0.5rem;"><strong>Description:</strong> {project["Description"][:80]}{"..." if len(project["Description"]) > 80 else ""}</p>
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        st.warning(personal_message)
-
-# Benedicks Portfolio Analysis Section (if enabled and file uploaded)
-if enable_pm_analysis and uploaded_file:
-    st.markdown("### 👨‍💼 Benedicks Portfolio Analysis (Non-BL12200)")
-    
-    # Analyze Benedicks portfolio data
-    benedicks_analysis, benedicks_message, benedicks_projects = analyze_benedicks_portfolio(uploaded_file)
-    st.session_state.benedicks_data = benedicks_analysis
-    st.session_state.benedicks_projects = benedicks_projects
-    
-    if benedicks_analysis:
-        st.success(benedicks_message)
-        
-        # Display comprehensive summary
-        total_balance = benedicks_analysis['total_balance']
-        total_count = benedicks_analysis['total_count']
-        summary = benedicks_analysis['summary']
-        
-        # Main Benedicks Portfolio Card
-        st.markdown(f"""
-        <div class="pm-analysis-card">
-            <h3>🎯 Benedicks Portfolio Analysis (Excluding BL12200)</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Projects</h4>
-                    <h3>{total_count}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Portfolio Value</h4>
-                    <h3>${total_balance:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Avg Project Size</h4>
-                    <h3>${total_balance/total_count:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Personnel Months</h4>
-                    <h3>{total_balance/(hourly_rate * hours_per_week * 4.3 * (1 + overhead_rate / 100)):,.1f}</h3>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Appropriation breakdown for Benedicks portfolio
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['omn']['count']}")
-            st.write(f"**Balance:** ${summary['omn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['omn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['omn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['omn']['T']:,.0f}")
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['opn']['count']}")
-            st.write(f"**Balance:** ${summary['opn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['opn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['opn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['opn']['T']:,.0f}")
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['scn']['count']}")
-            st.write(f"**Balance:** ${summary['scn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['scn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['scn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['scn']['T']:,.0f}")
-        
-        with col4:
-            st.markdown('<div class="metric-card"><h4>Other - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['other']['count']}")
-            st.write(f"**Balance:** ${summary['other']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['other']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['other']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['other']['T']:,.0f}")
-        
-        # Top BL Codes Analysis
-        if benedicks_analysis['bl_codes']:
-            st.markdown("#### 🏗️ Top BL Codes in Benedicks Portfolio")
-            for i, (bl_code, bl_data) in enumerate(benedicks_analysis['bl_codes'][:5]):
-                type_breakdown = ""
-                for type_code, type_data in bl_data['types'].items():
-                    if type_code.strip():
-                        type_breakdown += f'<span style="background: rgba(255,255,255,0.2); padding: 0.3rem 0.6rem; border-radius: 5px; font-size: 0.9em; margin-right: 0.5rem;">{type_code}: ${type_data["balance"]:,.0f}</span>'
-                
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #2c3e50aa, #34495eaa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {bl_code}</h5>
-                    <p><strong>Projects:</strong> {bl_data["count"]} | <strong>Total Balance:</strong> ${bl_data["balance"]:,.0f}</p>
-                    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">{type_breakdown}</div>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Top Individual Projects
-        if benedicks_projects:
-            st.markdown("#### 🎯 Top Benedicks Projects")
-            for i, project in enumerate(benedicks_projects[:10]):
-                description = project["Description"][:100] + "..." if len(project["Description"]) > 100 else project["Description"]
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #8e44adaa, #9b59b6aa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {project["BL_Code"]}</h5>
-                    <p><strong>PM:</strong> {project["PM"]} | <strong>APPN:</strong> {project["APPN"]} | <strong>Type:</strong> {project["Type"]}</p>
-                    <p><strong>Balance:</strong> ${project["Balance"]:,.0f}</p>
-                    <p><strong>Description:</strong> {description}</p>
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        st.warning(benedicks_message)
-
-# Data Input Section - Auto-extract when BL code changes
-if uploaded_file:
-    if st.session_state.last_bl_code != selected_bl:
-        extracted_data, message, top_cos = extract_vla_data(uploaded_file, selected_bl)
-        st.session_state.extracted_data = extracted_data
-        st.session_state.top_cos = top_cos
-        st.session_state.last_bl_code = selected_bl
-        st.info(message)
-    else:
-        extracted_data = st.session_state.extracted_data
-        top_cos = st.session_state.top_cos
-    
-    if extracted_data:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-            omn_balance = st.number_input("OMN Balance ($)", value=float(extracted_data['omn']['balance']))
-            omn_l = st.number_input("OMN Labor ($)", value=float(extracted_data['omn']['L']))
-            omn_m = st.number_input("OMN Material ($)", value=float(extracted_data['omn']['M']))
-            omn_t = st.number_input("OMN Travel ($)", value=float(extracted_data['omn']['T']))
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-            opn_balance = st.number_input("OPN Balance ($)", value=float(extracted_data['opn']['balance']))
-            opn_l = st.number_input("OPN Labor ($)", value=float(extracted_data['opn']['L']))
-            opn_m = st.number_input("OPN Material ($)", value=float(extracted_data['opn']['M']))
-            opn_t = st.number_input("OPN Travel ($)", value=float(extracted_data['opn']['T']))
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-            scn_balance = st.number_input("SCN Balance ($)", value=float(extracted_data['scn']['balance']))
-            scn_l = st.number_input("SCN Labor ($)", value=float(extracted_data['scn']['L']))
-            scn_m = st.number_input("SCN Material ($)", value=float(extracted_data['scn']['M']))
-            scn_t = st.number_input("SCN Travel ($)", value=float(extracted_data['scn']['T']))
-    else:
-        top_cos = []
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-            omn_balance = st.number_input("OMN Balance ($)", value=44053.0)
-            omn_l = st.number_input("OMN Labor ($)", value=44053.0)
-            omn_m = st.number_input("OMN Material ($)", value=0.0)
-            omn_t = st.number_input("OMN Travel ($)", value=0.0)
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-            opn_balance = st.number_input("OPN Balance ($)", value=1947299.0)
-            opn_l = st.number_input("OPN Labor ($)", value=1947299.0)
-            opn_m = st.number_input("OPN Material ($)", value=0.0)
-            opn_t = st.number_input("OPN Travel ($)", value=0.0)
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-            scn_balance = st.number_input("SCN Balance ($)", value=1148438.0)
-            scn_l = st.number_input("SCN Labor ($)", value=813595.0)
-            scn_m = st.number_input("SCN Material ($)", value=334843.0)
-            scn_t = st.number_input("SCN Travel ($)", value=0.0)
-else:
-    top_cos = []
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-        omn_balance = st.number_input("OMN Balance ($)", value=44053.0)
-        omn_l = st.number_input("OMN Labor ($)", value=44053.0)
-        omn_m = st.number_input("OMN Material ($)", value=0.0)
-        omn_t = st.number_input("OMN Travel ($)", value=0.0)
-    
-    with col2:
-        st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-        opn_balance = st.number_input("OPN Balance ($)", value=1947299.0)
-        opn_l = st.number_input("OPN Labor ($)", value=1947299.0)
-        opn_m = st.number_input("OPN Material ($)", value=0.0)
-        opn_t = st.number_input("OPN Travel ($)", value=0.0)
-    
-    with col3:
-        st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-        scn_balance = st.number_input("SCN Balance ($)", value=1148438.0)
-        scn_l = st.number_input("SCN Labor ($)", value=813595.0)
-        scn_m = st.number_input("SCN Material ($)", value=334843.0)
-        scn_t = st.number_input("SCN Travel ($)", value=0.0)
-
-# Calculate Button
-if st.button("🚀 Calculate Analysis", type="primary"):
-    
-    # Core Calculations
-    report_datetime = datetime.combine(report_date, datetime.min.time())
-    
-    # Calculate expiry dates
-    omn_expiry = get_appropriation_expiry_date('OMN', fiscal_year)
-    opn_expiry = get_appropriation_expiry_date('OPN', fiscal_year)
-    scn_expiry = get_appropriation_expiry_date('SCN', fiscal_year)
-    
-    # Calculate working days to each expiry
-    omn_working_days = count_working_days(report_datetime, omn_expiry, fiscal_year)
-    opn_working_days = count_working_days(report_datetime, opn_expiry, fiscal_year)
-    scn_working_days = count_working_days(report_datetime, scn_expiry, fiscal_year)
-    
-    # Check expiring soon
-    omn_expiring_soon = is_expiring_soon(report_datetime, omn_expiry, 2)
-    opn_expiring_soon = is_expiring_soon(report_datetime, opn_expiry, 2)
-    scn_expiring_soon = is_expiring_soon(report_datetime, scn_expiry, 2)
-    
-    # Personnel calculations
-    monthly_personnel_cost = hourly_rate * hours_per_week * 4.3 * branch_size * (1 + overhead_rate / 100)
-    total_balance = omn_balance + opn_balance + scn_balance
-    
-    # URGENT ALERTS
-    urgent_appropriations = []
-    if omn_expiring_soon and omn_balance > 0:
-        urgent_appropriations.append(f"OMN (expires {omn_expiry.strftime('%b %d, %Y')} - {(omn_expiry - report_datetime).days} days)")
-    if opn_expiring_soon and opn_balance > 0:
-        urgent_appropriations.append(f"OPN (expires {opn_expiry.strftime('%b %d, %Y')} - {(opn_expiry - report_datetime).days} days)")
-    if scn_expiring_soon and scn_balance > 0:
-        urgent_appropriations.append(f"SCN (expires {scn_expiry.strftime('%b %d, %Y')} - {(scn_expiry - report_datetime).days} days)")
-    
-    if urgent_appropriations:
-        st.error(f"🚨 **URGENT EXPIRY ALERT**: {', '.join(urgent_appropriations)}")
-    
-    # SMART APPN CHARGING STRATEGY
-    st.markdown('<div class="bubble"><h3 style="text-align: center;">💡 Smart APPN Charging Strategy</h3><p style="text-align: center;">Use all funding before Dec 30 while maintaining operations</p></div>', unsafe_allow_html=True)
-    
-    # Calculate Dec 30 strategy
-    dec_30_date = datetime(fiscal_year, 12, 30)
-    months_to_dec30 = max((dec_30_date - report_datetime).days / 30.44, 0)
-    total_funding_needed_dec30 = monthly_personnel_cost * months_to_dec30
-    
-    # Create optimal charging strategy
-    charging_strategy = []
-    remaining_need = total_funding_needed_dec30
-    
-    # Sort by expiry date (use earliest first)
-    appn_data = [("OMN", omn_balance, omn_expiry), ("OPN", opn_balance, opn_expiry), ("SCN", scn_balance, scn_expiry)]
-    appn_data.sort(key=lambda x: x[2])
-    
-    cumulative_months = 0
-    for appn, balance, expiry in appn_data:
-        if balance > 0 and remaining_need > 0:
-            months_from_this_appn = min(balance / monthly_personnel_cost, remaining_need / monthly_personnel_cost)
-            
-            if months_from_this_appn > 0:
-                amount_to_use = months_from_this_appn * monthly_personnel_cost
-                start_date = report_datetime + timedelta(days=cumulative_months * 30.44)
-                end_date = report_datetime + timedelta(days=(cumulative_months + months_from_this_appn) * 30.44)
-                
-                days_until_expiry = (expiry - report_datetime).days
-                if days_until_expiry < 60:
-                    urgency = "🚨 URGENT"
-                    urgency_color = "#e74c3c"
-                elif days_until_expiry < 120:
-                    urgency = "⚠️ PRIORITY"
-                    urgency_color = "#f39c12"
-                else:
-                    urgency = "✅ PLANNED"
-                    urgency_color = "#27ae60"
-                
-                charging_strategy.append({
-                    'appn': appn, 'amount': amount_to_use, 'months': months_from_this_appn,
-                    'start_date': start_date, 'end_date': end_date, 'expiry_date': expiry,
-                    'urgency': urgency, 'urgency_color': urgency_color,
-                    'remaining_balance': balance - amount_to_use
-                })
-                
-                remaining_need -= amount_to_use
-                cumulative_months += months_from_this_appn
-    
-    # Display charging strategy
-    if charging_strategy:
-        st.markdown("### 📅 Month-by-Month Charging Plan")
-        
-        for i, strategy in enumerate(charging_strategy, 1):
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, {strategy["urgency_color"]}aa, {strategy["urgency_color"]}dd); color: white; padding: 1.5rem; border-radius: 15px; margin: 1rem 0;">
-                <h4>Phase {i}: Charge to {strategy["appn"]} {strategy["urgency"]}</h4>
-                <p><strong>📅 Timeframe:</strong> {strategy["start_date"].strftime("%b %d, %Y")} → {strategy["end_date"].strftime("%b %d, %Y")} ({strategy["months"]:.1f} months)</p>
-                <p><strong>💰 Funding:</strong> ${strategy["amount"]:,.0f} | <strong>Remaining:</strong> ${strategy["remaining_balance"]:,.0f}</p>
-                <p><strong>⏰ {strategy["appn"]} Expires:</strong> {strategy["expiry_date"].strftime("%b %d, %Y")} ({(strategy["expiry_date"] - report_datetime).days} days)</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # CURRENT MONTH RECOMMENDATION
-    current_month_rec = charging_strategy[0] if charging_strategy else None
-    if current_month_rec:
-        st.markdown("### 🎯 THIS MONTH'S CHARGING RECOMMENDATION")
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 2rem; border-radius: 15px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 2px solid white;">
-            <h2>💳 CHARGE ALL LABOR TO: {current_month_rec["appn"]}</h2>
-            <h3>{current_month_rec["urgency"]}</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Monthly Target</h4>
-                    <h3>${monthly_personnel_cost:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Use Through</h4>
-                    <h3>{current_month_rec["end_date"].strftime("%b %Y")}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Days Until Expiry</h4>
-                    <h3>{(current_month_rec["expiry_date"] - report_datetime).days}</h3>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Top 5 Chargeable Objects with expiry highlighting
-    if top_cos:
-        st.markdown("### 🎯 Top 5 Chargeable Objects with Expiry Status")
-        
-        for i, co in enumerate(top_cos):
-            expiry_date = get_appropriation_expiry_date(co['APPN'], fiscal_year)
-            days_to_expiry = (expiry_date - report_datetime).days
-            expiring_soon = is_expiring_soon(report_datetime, expiry_date, 2)
-            
-            urgency = "🚨 URGENT" if expiring_soon else "⚠️ MONITOR" if days_to_expiry < 120 else "✅ STABLE"
-            card_class = "urgent-expiry" if expiring_soon else "status-card"
-            
-            st.markdown(f"""
-            <div class="{card_class}" style="background: linear-gradient(135deg, #3498dbaa, #2980b9aa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                <h4>#{i+1}: {co["CO_Number"]} - {co["APPN"]}</h4>
-                <p><strong>Balance:</strong> ${co["Balance"]:,.0f}</p>
-                <p><strong>Expires:</strong> {expiry_date.strftime("%b %d, %Y")} ({days_to_expiry} days)</p>
-                <p><strong>Status:</strong> {urgency}</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Enhanced Appropriation Cards
-    st.markdown("### 📅 Individual Appropriation Analysis")
-    
-    col1, col2, col3 = st.columns(3)
-    colors = {'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60'}
-    
-    appropriations_data = [
-        ('OMN', omn_balance, omn_l, omn_m, omn_t, omn_expiry, omn_working_days, omn_expiring_soon),
-        ('OPN', opn_balance, opn_l, opn_m, opn_t, opn_expiry, opn_working_days, opn_expiring_soon),
-        ('SCN', scn_balance, scn_l, scn_m, scn_t, scn_expiry, scn_working_days, scn_expiring_soon)
-    ]
-    
-    for i, (appn, balance, l, m, t, expiry, working_days, expiring_soon) in enumerate(appropriations_data):
-        with [col1, col2, col3][i]:
-            card_class = "urgent-expiry" if expiring_soon else "normal-expiry"
-            days_left = (expiry - report_datetime).days
-            
-            # Calculate hours analysis for this appropriation to Dec 30
-            working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
-            hours_needed_to_dec30 = working_days_to_dec30 * 8 * branch_size
-            hours_available_appn = balance / hourly_rate if hourly_rate > 0 else 0
-            hours_excess_appn = hours_available_appn - hours_needed_to_dec30
-            
-            pulse_animation = "animation: pulse 2s infinite;" if expiring_soon else ""
-            
-            st.markdown(f"""
-            <div class="status-card {card_class}" style="background: linear-gradient(135deg, {colors[appn]}aa, {colors[appn]}dd);">
-                <h3>{appn} Appropriation</h3>
-                <p><strong>Expires: {expiry.strftime("%b %d, %Y")}</strong></p>
-                <p>🕒 {days_left} days ({working_days} working days)</p>
-                <h4>${balance:,.0f}</h4>
-                <p>Personnel Months: {balance/monthly_personnel_cost:.1f}</p>
-                <p>L: ${l:,.0f} | M: ${m:,.0f} | T: ${t:,.0f}</p>
-                {"<p style='font-weight: bold; " + pulse_animation + "'>🚨 EXPIRES SOON!</p>" if expiring_soon else ""}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Individual hours analysis box for each appropriation
-            excess_color = "green" if hours_excess_appn >= 0 else "red"
-            excess_text = "Excess" if hours_excess_appn >= 0 else "Deficit"
-            
-            st.markdown(f"""
-            <div style="background: rgba(255,255,255,0.15); border: 2px solid {colors[appn]}; border-radius: 10px; padding: 1rem; margin: 0.5rem 0; color: black;">
-                <h5 style="color: {colors[appn]}; margin: 0 0 0.5rem 0;">📊 {appn} Hours Analysis (to Dec 30)</h5>
-                <div style="display: grid; grid-template-columns: 1fr; gap: 0.3rem; font-size: 0.9em;">
-                    <div><strong>Hours Available:</strong> {hours_available_appn:,.0f}</div>
-                    <div><strong>Hours Needed:</strong> {hours_needed_to_dec30:,}</div>
-                    <div style="color: {excess_color};"><strong>Hours {excess_text}:</strong> {abs(hours_excess_appn):,.0f}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Combined Analysis Box - Total to Dec 30
-    st.markdown("### 🎯 Combined Branch Coverage Analysis (to Dec 30)")
-    
-    # Calculate total combined metrics to Dec 30
-    working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
-    total_hours_needed_dec30 = working_days_to_dec30 * 8 * branch_size
-    total_hours_available_dec30 = total_balance / hourly_rate if hourly_rate > 0 else 0
-    total_hours_excess_dec30 = total_hours_available_dec30 - total_hours_needed_dec30
-    
-    # Calculate coverage percentage
-    coverage_pct_dec30 = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
-    
-    # Determine status color based on coverage
-    if coverage_pct_dec30 >= 100:
-        status_color = "#27ae60"
-        status_text = "✅ FULLY COVERED"
-        status_message = "Branch operations secured through Dec 30"
-    elif coverage_pct_dec30 >= 80:
-        status_color = "#f39c12"
-        status_text = "⚠️ CAUTION"
-        status_message = "Adequate coverage but monitor closely"
-    else:
-        status_color = "#e74c3c"
-        status_text = "🚨 CRITICAL"
-        status_message = "Insufficient funding for full branch operations"
-    
-    # Create the status box
-    excess_deficit_text = "Excess" if total_hours_excess_dec30 >= 0 else "Deficit"
-    excess_color = "lightgreen" if total_hours_excess_dec30 >= 0 else "lightcoral"
-    
-    st.markdown(f"""
-    <div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
-        <h2>🎯 BRANCH OPERATIONS STATUS: {status_text}</h2>
-        <h3>{status_message}</h3>
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0;">
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Total Funding</h4>
-                <h3>${total_balance:,.0f}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours Available</h4>
-                <h3>{total_hours_available_dec30:,.0f}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours Needed</h4>
-                <h3>{total_hours_needed_dec30:,}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours {excess_deficit_text}</h4>
-                <h3 style="color: {excess_color};">{abs(total_hours_excess_dec30):,.0f}</h3>
-            </div>
-        </div>
-        <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
-            <h4>Branch Coverage to Dec 30: {coverage_pct_dec30:.1f}%</h4>
-            <p>Working Days Remaining: {working_days_to_dec30} | Branch Size: {branch_size} people</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Show breakdown by appropriation contribution
-    st.markdown("#### 📊 Funding Contribution Breakdown")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        omn_contribution = (omn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("OMN Contribution", f"{omn_contribution:.1f}%", f"${omn_balance:,.0f}")
-    
-    with col2:
-        opn_contribution = (opn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("OPN Contribution", f"{opn_contribution:.1f}%", f"${opn_balance:,.0f}")
-    
-    with col3:
-        scn_contribution = (scn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("SCN Contribution", f"{scn_contribution:.1f}%", f"${scn_balance:,.0f}")
-    
-    # Strategic recommendations based on combined analysis
-    if total_hours_excess_dec30 < 0:
-        shortfall_amount = abs(total_hours_excess_dec30) * hourly_rate
-        st.error(f"💰 **FUNDING SHORTFALL**: ${shortfall_amount:,.0f} additional funding needed for full branch operations through Dec 30")
-        
-        # Calculate what percentage of branch could be sustained
-        sustainable_percentage = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
-        sustainable_people = int(branch_size * sustainable_percentage / 100)
-        
-        st.warning(f"⚠️ **ALTERNATIVE**: Current funding can sustain {sustainable_people} people ({sustainable_percentage:.1f}% of branch) through Dec 30")
-        
-    elif total_hours_excess_dec30 > 0:
-        excess_amount = total_hours_excess_dec30 * hourly_rate
-        excess_months = total_hours_excess_dec30 / (8 * branch_size * 21.7)  # Average working days per month
-        
-        st.success(f"💡 **FUNDING SURPLUS**: ${excess_amount:,.0f} available for additional scope or {excess_months:.1f} extra months of operations")
-    
-    # Charts
-    st.markdown("### 📈 Financial Visualizations")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = go.Figure()
-        fig.add_trace(go.Bar(name='Labor', x=['OMN', 'OPN', 'SCN'], y=[omn_l, opn_l, scn_l], marker_color='#3498db'))
-        fig.add_trace(go.Bar(name='Material', x=['OMN', 'OPN', 'SCN'], y=[omn_m, opn_m, scn_m], marker_color='#e74c3c'))
-        fig.add_trace(go.Bar(name='Travel', x=['OMN', 'OPN', 'SCN'], y=[omn_t, opn_t, scn_t], marker_color='#f39c12'))
-        fig.update_layout(title="L/M/T Breakdown", barmode='stack', height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig2 = px.bar(x=['OMN', 'OPN', 'SCN'], y=[omn_balance, opn_balance, scn_balance], 
-                      title="Balance by Appropriation", color=['OMN', 'OPN', 'SCN'], 
-                      color_discrete_map=colors, height=400)
-        fig2.update_layout(showlegend=False)
-        st.plotly_chart(fig2, use_container_width=True)
-    
-    # Personal Funding Analysis Charts (if enabled and data available)
-    if enable_personal_funding and st.session_state.personal_funding_data:
-        st.markdown("### 📊 Personal Funding Portfolio Visualizations")
-        personal_data = st.session_state.personal_funding_data
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Funding Distribution Pie Chart
-            if personal_data['total_available_funding'] > 0:
-                fig_personal_pie = px.pie(
-                    values=[personal_data['bl16200_funding'], personal_data['other_branches_funding']], 
-                    names=['BL16200 (Your Branch)', 'Other Branches'], 
-                    title="Your Funding Distribution (Excluding BL12200)",
-                    color_discrete_map={'BL16200 (Your Branch)': '#3498db', 'Other Branches': '#e67e22'}
-                )
-                st.plotly_chart(fig_personal_pie, use_container_width=True)
-        
-        with col2:
-            # Top Other Branches Funding
-            if personal_data['bl_code_breakdown']:
-                top_other_bl = personal_data['bl_code_breakdown'][:6]
-                bl_names = [bl[0][:15] + "..." if len(bl[0]) > 15 else bl[0] for bl, _ in top_other_bl]
-                bl_balances = [bl_data['balance'] for _, bl_data in top_other_bl]
-                
-                fig_other_branches = px.bar(
-                    x=bl_names, y=bl_balances,
-                    title="Top Other Branches Funding",
-                    color=bl_balances,
-                    color_continuous_scale='oranges'
-                )
-                fig_other_branches.update_layout(showlegend=False, xaxis_tickangle=-45,
-                                               xaxis_title="BL Code", yaxis_title="Balance ($)")
-                st.plotly_chart(fig_other_branches, use_container_width=True)
-        
-        # Additional Personal Portfolio Charts
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            # Appropriation Breakdown Comparison
-            categories = personal_data['categories']
-            appn_comparison = {
-                'Appropriation': ['OMN', 'OPN', 'SCN'],
-                'BL16200': [categories['bl16200']['omn']['balance'], 
-                           categories['bl16200']['opn']['balance'], 
-                           categories['bl16200']['scn']['balance']],
-                'Other Branches': [categories['other_branches']['omn']['balance'], 
-                                  categories['other_branches']['opn']['balance'], 
-                                  categories['other_branches']['scn']['balance']]
-            }
-            
-            fig_appn_comparison = go.Figure()
-            fig_appn_comparison.add_trace(go.Bar(name='BL16200', x=appn_comparison['Appropriation'], 
-                                               y=appn_comparison['BL16200'], marker_color='#3498db'))
-            fig_appn_comparison.add_trace(go.Bar(name='Other Branches', x=appn_comparison['Appropriation'], 
-                                               y=appn_comparison['Other Branches'], marker_color='#e67e22'))
-            fig_appn_comparison.update_layout(title="Appropriation Comparison: Your Branch vs Others", 
-                                            barmode='group', height=400)
-            st.plotly_chart(fig_appn_comparison, use_container_width=True)
-        
-        with col4:
-            # Project Count Comparison
-            project_counts = {
-                'Category': ['BL16200', 'Other Branches'],
-                'Projects': [categories['bl16200']['total_count'], categories['other_branches']['total_count']]
-            }
-            
-            fig_project_count = px.bar(
-                x=project_counts['Category'], y=project_counts['Projects'],
-                title="Project Count: Your Branch vs Others",
-                color=project_counts['Category'],
-                color_discrete_map={'BL16200': '#3498db', 'Other Branches': '#e67e22'}
-            )
-            fig_project_count.update_layout(showlegend=False, yaxis_title="Number of Projects")
-            st.plotly_chart(fig_project_count, use_container_width=True)
-
-    # Benedicks Analysis Charts (if enabled and data available)
-    if enable_pm_analysis and st.session_state.benedicks_data:
-        st.markdown("### 📊 Benedicks Portfolio Visualizations")
-        benedicks_data = st.session_state.benedicks_data
-        benedicks_projects = st.session_state.benedicks_projects
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Benedicks Portfolio by Appropriation
-            summary = benedicks_data['summary']
-            appn_balances = [summary['omn']['balance'], summary['opn']['balance'], summary['scn']['balance'], summary['other']['balance']]
-            appn_names = ['OMN', 'OPN', 'SCN', 'Other']
-            
-            # Filter out zero balances for cleaner pie chart
-            filtered_data = [(name, balance) for name, balance in zip(appn_names, appn_balances) if balance > 0]
-            if filtered_data:
-                names, balances = zip(*filtered_data)
-                fig3 = px.pie(values=balances, names=names, 
-                             title="Benedicks Portfolio by Appropriation",
-                             color_discrete_map={'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60', 'Other': '#9b59b6'})
-                st.plotly_chart(fig3, use_container_width=True)
-        
-        with col2:
-            # Top Benedicks BL Codes
-            if benedicks_data['bl_codes']:
-                top_bl_codes = benedicks_data['bl_codes'][:8]  # Top 8 for readability
-                bl_names = [bl[0][:20] + "..." if len(bl[0]) > 20 else bl[0] for bl, _ in top_bl_codes]  # Truncate long names
-                bl_balances = [bl_data['balance'] for _, bl_data in top_bl_codes]
-                
-                fig4 = px.bar(x=bl_names, y=bl_balances,
-                             title="Top Benedicks BL Codes by Balance",
-                             color=bl_balances,
-                             color_continuous_scale='viridis')
-                fig4.update_layout(showlegend=False, xaxis_tickangle=-45, 
-                                 xaxis_title="BL Code", yaxis_title="Balance ($)")
-                st.plotly_chart(fig4, use_container_width=True)
-        
-        # Additional Benedicks analysis charts
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            # Project count by appropriation
-            appn_counts = [summary['omn']['count'], summary['opn']['count'], summary['scn']['count'], summary['other']['count']]
-            filtered_count_data = [(name, count) for name, count in zip(appn_names, appn_counts) if count > 0]
-            if filtered_count_data:
-                names, counts = zip(*filtered_count_data)
-                fig5 = px.bar(x=names, y=counts,
-                             title="Benedicks Project Count by Appropriation",
-                             color=names,
-                             color_discrete_map={'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60', 'Other': '#9b59b6'})
-                fig5.update_layout(showlegend=False, yaxis_title="Number of Projects")
-                st.plotly_chart(fig5, use_container_width=True)
-        
-        with col4:
-            # L/M/T breakdown for Benedicks portfolio
-            lmt_data = {
-                'Type': ['Labor', 'Material', 'Travel'],
-                'OMN': [summary['omn']['L'], summary['omn']['M'], summary['omn']['T']],
-                'OPN': [summary['opn']['L'], summary['opn']['M'], summary['opn']['T']],
-                'SCN': [summary['scn']['L'], summary['scn']['M'], summary['scn']['T']]
-            }
-            
-            fig6 = go.Figure()
-            fig6.add_trace(go.Bar(name='OMN', x=lmt_data['Type'], y=lmt_data['OMN'], marker_color='#e74c3c'))
-            fig6.add_trace(go.Bar(name='OPN', x=lmt_data['Type'], y=lmt_data['OPN'], marker_color='#f39c12'))
-            fig6.add_trace(go.Bar(name='SCN', x=lmt_data['Type'], y=lmt_data['SCN'], marker_color='#27ae60'))
-            fig6.update_layout(title="Benedicks Portfolio L/M/T Breakdown", barmode='stack', height=400)
-            st.plotly_chart(fig6, use_container_width=True)
-    
-    # Export
-    st.markdown("### 📤 Export Results")
-    
-    export_data = {
-        'Metric': ['Total Balance', 'Monthly Personnel Cost', 'Months to Dec 30', 'OMN Balance', 'OMN Expiry', 'OPN Balance', 'OPN Expiry', 'SCN Balance', 'SCN Expiry'],
-        'Value': [f"${total_balance:,.0f}", f"${monthly_personnel_cost:,.0f}", f"{months_to_dec30:.1f}", 
-                 f"${omn_balance:,.0f}", omn_expiry.strftime('%Y-%m-%d'), f"${opn_balance:,.0f}", 
-                 opn_expiry.strftime('%Y-%m-%d'), f"${scn_balance:,.0f}", scn_expiry.strftime('%Y-%m-%d')]
-    }
-    
-    csv_buffer = io.StringIO()
-    pd.DataFrame(export_data).to_csv(csv_buffer, index=False)
-    
-    # Export Personal Funding data if available
-    personal_funding_export_available = False
-    if enable_personal_funding and st.session_state.personal_funding_data:
-        personal_data = st.session_state.personal_funding_data
-        personal_export_data = []
-        
-        for project in personal_data['all_projects']:
-            personal_export_data.append({
-                'PM': project['PM'],
-                'APPN': project['APPN'],
-                'Type': project['Type'],
-                'Balance': project['Balance'],
-                'BL_Code': project['BL_Code'],
-                'Category': project['Category'],
-                'Description': project['Description']
-            })
-        
-        personal_csv_buffer = io.StringIO()
-        pd.DataFrame(personal_export_data).to_csv(personal_csv_buffer, index=False)
-        personal_funding_export_available = True
-
-    # Export Benedicks data if available
-    benedicks_export_available = False
-    if enable_pm_analysis and st.session_state.benedicks_projects:
-        benedicks_projects = st.session_state.benedicks_projects
-        benedicks_export_data = []
-        for project in benedicks_projects:
-            benedicks_export_data.append({
-                'PM': project['PM'],
-                'APPN': project['APPN'],
-                'Type': project['Type'],
-                'Balance': project['Balance'],
-                'BL_Code': project['BL_Code'],
-                'Description': project['Description']
-            })
-        
-        benedicks_csv_buffer = io.StringIO()
-        pd.DataFrame(benedicks_export_data).to_csv(benedicks_csv_buffer, index=False)
-        benedicks_export_available = True
-    
-    if charging_strategy:
-        strategy_export = []
-        for i, strategy in enumerate(charging_strategy, 1):
-            strategy_export.append({
-                'Phase': i, 'APPN': strategy['appn'], 'Start_Date': strategy['start_date'].strftime('%Y-%m-%d'),
-                'End_Date': strategy['end_date'].strftime('%Y-%m-%d'), 'Amount': strategy['amount'],
-                'Expiry_Date': strategy['expiry_date'].strftime('%Y-%m-%d'), 'Urgency': strategy['urgency']
-            })
-        
-        strategy_csv_buffer = io.StringIO()
-        pd.DataFrame(strategy_export).to_csv(strategy_csv_buffer, index=False)
-        
-        if benedicts_export_available and personal_funding_export_available:
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col4:
-                st.download_button("💼 Download Personal Funding", personal_csv_buffer.getvalue(),
-                                 f"Personal_Funding_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        elif benedicks_export_available:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        elif personal_funding_export_available:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("💼 Download Personal Funding", personal_csv_buffer.getvalue(),
-                                 f"Personal_Funding_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-    else:
-        if benedicks_export_available and personal_funding_export_available:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("💼 Download Personal Funding", personal_csv_buffer.getvalue(),
-                                 f"Personal_Funding_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        elif benedicks_export_available:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        elif personal_funding_export_available:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("💼 Download Personal Funding", personal_csv_buffer.getvalue(),
-                                 f"Personal_Funding_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                             f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-
-# Footer
-st.markdown("---")
-st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging, Expiry Analysis, Benedicks Portfolio & Personal Funding Analysis</p></div>', unsafe_allow_html=True) Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-    else:
-        if benedicks_export_available:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                             f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-
-# Footer
-st.markdown("---")
-st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging, Expiry Analysis & Benedicks Portfolio Analysis</p></div>', unsafe_allow_html=True), '').replace(',', '').strip()
-                    balance = float(balance_str) if balance_str and balance_str != 'nan' else 0.0
-                    
-                    # Track individual projects
-                    project_info = {
-                        'PM': pm_name,
-                        'APPN': appn,
-                        'Type': type_code,
-                        'Balance': balance,
-                        'BL_Code': bl_code,
-                        'Description': project_desc,
-                        'Category': category_info['name']
-                    }
-                    
-                    result[category_key]['projects'].append(project_info)
-                    all_projects.append(project_info)
-                    
-                    # Track BL code breakdown for other branches
-                    if category_key == 'other_branches' and bl_code not in bl_code_breakdown:
-                        bl_code_breakdown[bl_code] = {'balance': 0.0, 'count': 0, 'projects': []}
-                    
-                    if category_key == 'other_branches':
-                        bl_code_breakdown[bl_code]['balance'] += balance
-                        bl_code_breakdown[bl_code]['count'] += 1
-                        bl_code_breakdown[bl_code]['projects'].append(project_info)
-                    
-                except:
-                    balance = 0.0
-                    continue
-                
-                # Determine appropriation category
-                if 'OMN' in appn:
-                    appn_key = 'omn'
-                elif 'SCN' in appn:
-                    appn_key = 'scn'
-                elif 'OPN' in appn:
-                    appn_key = 'opn'
-                else:
-                    appn_key = 'other'
-                
-                result[category_key][appn_key]['balance'] += balance
-                result[category_key][appn_key]['count'] += 1
-                result[category_key]['total_balance'] += balance
-                result[category_key]['total_count'] += 1
-                
-                # Distribute by type
-                if type_code == 'L':
-                    result[category_key][appn_key]['L'] += balance
-                elif type_code == 'M':
-                    result[category_key][appn_key]['M'] += balance
-                elif type_code == 'T':
-                    result[category_key][appn_key]['T'] += balance
-                else:
-                    # If type is unclear, distribute proportionally
-                    result[category_key][appn_key]['L'] += balance * 0.6
-                    result[category_key][appn_key]['M'] += balance * 0.3
-                    result[category_key][appn_key]['T'] += balance * 0.1
-            
-            # Sort projects by balance for each category
-            result[category_key]['projects'] = sorted(result[category_key]['projects'], key=lambda x: x['Balance'], reverse=True)
-        
-        # Sort all projects by balance
-        all_projects = sorted(all_projects, key=lambda x: x['Balance'], reverse=True)
-        
-        # Sort BL code breakdown for other branches
-        sorted_bl_codes = sorted(bl_code_breakdown.items(), key=lambda x: x[1]['balance'], reverse=True)
-        
-        # Calculate totals (excluding BL12200)
-        total_available_funding = result['bl16200']['total_balance'] + result['other_branches']['total_balance']
-        total_projects = result['bl16200']['total_count'] + result['other_branches']['total_count']
-        
-        return {
-            'categories': result,
-            'all_projects': all_projects,
-            'bl_code_breakdown': sorted_bl_codes,
-            'total_available_funding': total_available_funding,
-            'total_projects': total_projects,
-            'bl16200_funding': result['bl16200']['total_balance'],
-            'other_branches_funding': result['other_branches']['total_balance'],
-            'bl12200_funding': result['bl12200']['total_balance']
-        }, f"✅ Found {total_projects} projects under your PM (excluding BL12200) worth ${total_available_funding:,.0f}", all_projects
-        
-    except Exception as e:
-        return None, f"❌ Error analyzing personal funding portfolio: {str(e)}", []
-    """
-    Analyze all Benedicks entries that are NOT BL12200
-    """
-    try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
-        
-        # Filter for Benedicks entries (PM column is index 3)
-        benedicks_mask = df.iloc[:, 3].astype(str).str.lower().str.contains('benedick', na=False)
-        benedicks_data = df[benedicks_mask]
-        
-        if benedicks_data.empty:
-            return None, "No Benedicks entries found", []
-        
-        # Exclude BL12200 entries (Billing Element column is index 7)
-        non_bl12200_mask = ~benedicks_data.iloc[:, 7].astype(str).str.contains('BL12200', na=False)
-        filtered_data = benedicks_data[non_bl12200_mask]
-        
-        if filtered_data.empty:
-            return None, "All Benedicks entries are BL12200", []
-        
-        # Analyze the data structure
-        result = {
-            'omn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-            'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-            'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-            'other': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0}
-        }
-        
-        benedicks_projects = []
-        bl_code_summary = {}
-        
-        for _, row in filtered_data.iterrows():
-            appn = str(row.iloc[2]).upper() if len(df.columns) > 2 else "Unknown"
-            type_code = str(row.iloc[1]).upper().strip() if len(df.columns) > 1 else "Unknown"
-            pm_name = str(row.iloc[3]) if len(df.columns) > 3 else "Unknown"
-            bl_code = str(row.iloc[7]) if len(df.columns) > 7 else "Unknown"
-            project_desc = str(row.iloc[5]) if len(df.columns) > 5 else "Unknown"
-            
             try:
                 balance_str = str(row.iloc[16]).replace('$', '').replace(',', '').strip()
-                balance = float(balance_str) if balance_str and balance_str != 'nan' else 0.0
-                
-                # Track individual projects
-                benedicks_projects.append({
-                    'PM': pm_name,
-                    'APPN': appn,
-                    'Type': type_code,
-                    'Balance': balance,
-                    'BL_Code': bl_code,
-                    'Description': project_desc
-                })
-                
-                # Track BL code summaries
-                if bl_code not in bl_code_summary:
-                    bl_code_summary[bl_code] = {'balance': 0.0, 'count': 0, 'types': {}}
-                bl_code_summary[bl_code]['balance'] += balance
-                bl_code_summary[bl_code]['count'] += 1
-                
-                if type_code not in bl_code_summary[bl_code]['types']:
-                    bl_code_summary[bl_code]['types'][type_code] = {'balance': 0.0, 'count': 0}
-                bl_code_summary[bl_code]['types'][type_code]['balance'] += balance
-                bl_code_summary[bl_code]['types'][type_code]['count'] += 1
-                
-            except:
-                balance = 0.0
-                continue
-            
-            # Determine appropriation category
-            if 'OMN' in appn:
-                appn_key = 'omn'
-            elif 'SCN' in appn:
-                appn_key = 'scn'
-            elif 'OPN' in appn:
-                appn_key = 'opn'
-            else:
-                appn_key = 'other'
-            
-            result[appn_key]['balance'] += balance
-            result[appn_key]['count'] += 1
-            
-            # Distribute by type
-            if type_code == 'L':
-                result[appn_key]['L'] += balance
-            elif type_code == 'M':
-                result[appn_key]['M'] += balance
-            elif type_code == 'T':
-                result[appn_key]['T'] += balance
-            else:
-                # If type is unclear, distribute proportionally
-                result[appn_key]['L'] += balance * 0.6
-                result[appn_key]['M'] += balance * 0.3
-                result[appn_key]['T'] += balance * 0.1
-        
-        # Sort projects by balance
-        benedicks_projects = sorted(benedicks_projects, key=lambda x: x['Balance'], reverse=True)
-        
-        # Sort BL codes by balance
-        top_bl_codes = sorted(bl_code_summary.items(), key=lambda x: x[1]['balance'], reverse=True)[:10]
-        
-        total_balance = sum([result[key]['balance'] for key in result.keys()])
-        total_count = len(benedicks_projects)
-        
-        return {
-            'summary': result,
-            'projects': benedicks_projects,
-            'bl_codes': top_bl_codes,
-            'total_balance': total_balance,
-            'total_count': total_count
-        }, f"✅ Found {total_count} Benedicks projects (non-BL12200) worth ${total_balance:,.0f}", benedicks_projects
-        
-    except Exception as e:
-        return None, f"❌ Error analyzing Benedicks portfolio: {str(e)}", []
+                balance = float(balance_str) if balance_str and balance_str.lower() != 'nan' else 0.0
+                if balance <= 0: continue
 
-def extract_vla_data(file, target_bl):
-    try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
-        bl_data = df[df.iloc[:, 8].astype(str).str.contains(target_bl, na=False)]
-        
-        if bl_data.empty:
-            return None, f"No data found for {target_bl}", []
-        
-        result = {'omn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
-                 'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
-                 'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0}}
-        
-        chargeable_objects = []
-        
-        for _, row in bl_data.iterrows():
-            appn = str(row.iloc[2]).upper()
-            type_code = str(row.iloc[1]).upper().strip()
-            co_number = str(row.iloc[3]) if len(df.columns) > 3 else "Unknown"
-            
-            try:
-                balance = float(str(row.iloc[16]).replace('$', '').replace(',', '').strip() or 0)
+                appn = str(row.iloc[2]).upper()
+                type_code = str(row.iloc[1]).upper().strip()
+                co_number = str(row.iloc[3])
                 
-                if balance > 0:
-                    chargeable_objects.append({'CO_Number': co_number, 'APPN': appn, 'Type': type_code, 'Balance': balance})
-            except:
+                chargeable_objects.append({'CO_Number': co_number, 'APPN': appn, 'Type': type_code, 'Balance': balance})
+                
+                appn_key = 'omn' if 'OMN' in appn else 'scn' if 'SCN' in appn else 'opn'
+                result[appn_key]['balance'] += balance
+                
+                if type_code == 'L': result[appn_key]['L'] += balance
+                elif type_code == 'M': result[appn_key]['M'] += balance
+                elif type_code == 'T': result[appn_key]['T'] += balance
+                else: # Proportional distribution for unknown types
+                    result[appn_key]['L'] += balance * 0.6
+                    result[appn_key]['M'] += balance * 0.3
+                    result[appn_key]['T'] += balance * 0.1
+            except (ValueError, TypeError):
                 continue
-            
-            appn_key = 'omn' if 'OMN' in appn else 'scn' if 'SCN' in appn else 'opn'
-            result[appn_key]['balance'] += balance
-            
-            if type_code == 'L': result[appn_key]['L'] += balance
-            elif type_code == 'M': result[appn_key]['M'] += balance
-            elif type_code == 'T': result[appn_key]['T'] += balance
-            else:
-                result[appn_key]['L'] += balance * 0.6
-                result[appn_key]['M'] += balance * 0.3
-                result[appn_key]['T'] += balance * 0.1
-        
+
         top_cos = sorted(chargeable_objects, key=lambda x: x['Balance'], reverse=True)[:5]
         return result, f"✅ Extracted data for {target_bl}", top_cos
     except Exception as e:
-        return None, f"❌ Error: {str(e)}", []
+        return None, f"❌ Error extracting VLA data: {str(e)}", []
 
-# Initialize session state
-if 'extracted_data' not in st.session_state:
-    st.session_state.extracted_data = None
-if 'last_bl_code' not in st.session_state:
-    st.session_state.last_bl_code = None
-if 'top_cos' not in st.session_state:
-    st.session_state.top_cos = []
-if 'benedicks_data' not in st.session_state:
-    st.session_state.benedicks_data = None
-if 'benedicks_projects' not in st.session_state:
-    st.session_state.benedicks_projects = []
+# --- Initialize Session State ---
+if 'extracted_data' not in st.session_state: st.session_state.extracted_data = None
+if 'last_bl_code' not in st.session_state: st.session_state.last_bl_code = None
+if 'top_cos' not in st.session_state: st.session_state.top_cos = []
+if 'pm_portfolio_data' not in st.session_state: st.session_state.pm_portfolio_data = None
+if 'pm_projects' not in st.session_state: st.session_state.pm_projects = []
 
-# Benedicks Portfolio Analysis Section (if enabled and file uploaded)
+# --- PM Portfolio Analysis Section ---
 if enable_pm_analysis and uploaded_file:
-    st.markdown("### 👨‍💼 Benedicks Portfolio Analysis (Non-BL12200)")
+    st.markdown("---")
+    st.markdown(f"### 👨‍💼 PM Portfolio Analysis for '{pm_name_filter}'")
     
-    # Analyze Benedicks portfolio data
-    benedicks_analysis, benedicks_message, benedicks_projects = analyze_benedicks_portfolio(uploaded_file)
-    st.session_state.benedicks_data = benedicks_analysis
-    st.session_state.benedicks_projects = benedicks_projects
+    # Analyze PM portfolio data
+    pm_analysis, pm_message, pm_projects = analyze_pm_portfolio(uploaded_file, pm_name_filter, personal_bl_filter, managed_bl_filter)
+    st.session_state.pm_portfolio_data = pm_analysis
+    st.session_state.pm_projects = pm_projects
     
-    if benedicks_analysis:
-        st.success(benedicks_message)
+    if pm_analysis:
+        st.success(pm_message)
         
-        # Display comprehensive summary
-        total_balance = benedicks_analysis['total_balance']
-        total_count = benedicks_analysis['total_count']
-        summary = benedicks_analysis['summary']
-        
-        # Main Benedicks Portfolio Card
-        st.markdown(f"""
-        <div class="pm-analysis-card">
-            <h3>🎯 Benedicks Portfolio Analysis (Excluding BL12200)</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Projects</h4>
-                    <h3>{total_count}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Portfolio Value</h4>
-                    <h3>${total_balance:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Avg Project Size</h4>
-                    <h3>${total_balance/total_count:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Personnel Months</h4>
-                    <h3>{total_balance/(hourly_rate * hours_per_week * 4.3 * (1 + overhead_rate / 100)):,.1f}</h3>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Appropriation breakdown for Benedicks portfolio
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['omn']['count']}")
-            st.write(f"**Balance:** ${summary['omn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['omn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['omn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['omn']['T']:,.0f}")
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['opn']['count']}")
-            st.write(f"**Balance:** ${summary['opn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['opn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['opn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['opn']['T']:,.0f}")
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['scn']['count']}")
-            st.write(f"**Balance:** ${summary['scn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['scn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['scn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['scn']['T']:,.0f}")
-        
-        with col4:
-            st.markdown('<div class="metric-card"><h4>Other - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['other']['count']}")
-            st.write(f"**Balance:** ${summary['other']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['other']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['other']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['other']['T']:,.0f}")
-        
-        # Top BL Codes Analysis
-        if benedicks_analysis['bl_codes']:
-            st.markdown("#### 🏗️ Top BL Codes in Benedicks Portfolio")
-            for i, (bl_code, bl_data) in enumerate(benedicks_analysis['bl_codes'][:5]):
-                type_breakdown = ""
-                for type_code, type_data in bl_data['types'].items():
-                    if type_code.strip():
-                        type_breakdown += f'<span style="background: rgba(255,255,255,0.2); padding: 0.3rem 0.6rem; border-radius: 5px; font-size: 0.9em; margin-right: 0.5rem;">{type_code}: ${type_data["balance"]:,.0f}</span>'
-                
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #2c3e50aa, #34495eaa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {bl_code}</h5>
-                    <p><strong>Projects:</strong> {bl_data["count"]} | <strong>Total Balance:</strong> ${bl_data["balance"]:,.0f}</p>
-                    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">{type_breakdown}</div>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Top Individual Projects
-        if benedicks_projects:
-            st.markdown("#### 🎯 Top Benedicks Projects")
-            for i, project in enumerate(benedicks_projects[:10]):
-                description = project["Description"][:100] + "..." if len(project["Description"]) > 100 else project["Description"]
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #8e44adaa, #9b59b6aa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {project["BL_Code"]}</h5>
-                    <p><strong>PM:</strong> {project["PM"]} | <strong>APPN:</strong> {project["APPN"]} | <strong>Type:</strong> {project["Type"]}</p>
-                    <p><strong>Balance:</strong> ${project["Balance"]:,.0f}</p>
-                    <p><strong>Description:</strong> {description}</p>
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        st.warning(benedicks_message)
+        # Unpack data for easier access
+        cats = pm_analysis['categories']
+        personal_funding = cats['personal']['total_balance']
+        other_funding = cats['other']['total_balance']
+        managed_funding = cats['managed']['total_balance']
+        total_portfolio_balance = pm_analysis['total_portfolio_balance']
 
-# Data Input Section - Auto-extract when BL code changes
-if uploaded_file:
-    if st.session_state.last_bl_code != selected_bl:
-        extracted_data, message, top_cos = extract_vla_data(uploaded_file, selected_bl)
-        st.session_state.extracted_data = extracted_data
-        st.session_state.top_cos = top_cos
-        st.session_state.last_bl_code = selected_bl
-        st.info(message)
-    else:
-        extracted_data = st.session_state.extracted_data
-        top_cos = st.session_state.top_cos
-    
-    if extracted_data:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-            omn_balance = st.number_input("OMN Balance ($)", value=float(extracted_data['omn']['balance']))
-            omn_l = st.number_input("OMN Labor ($)", value=float(extracted_data['omn']['L']))
-            omn_m = st.number_input("OMN Material ($)", value=float(extracted_data['omn']['M']))
-            omn_t = st.number_input("OMN Travel ($)", value=float(extracted_data['omn']['T']))
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-            opn_balance = st.number_input("OPN Balance ($)", value=float(extracted_data['opn']['balance']))
-            opn_l = st.number_input("OPN Labor ($)", value=float(extracted_data['opn']['L']))
-            opn_m = st.number_input("OPN Material ($)", value=float(extracted_data['opn']['M']))
-            opn_t = st.number_input("OPN Travel ($)", value=float(extracted_data['opn']['T']))
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-            scn_balance = st.number_input("SCN Balance ($)", value=float(extracted_data['scn']['balance']))
-            scn_l = st.number_input("SCN Labor ($)", value=float(extracted_data['scn']['L']))
-            scn_m = st.number_input("SCN Material ($)", value=float(extracted_data['scn']['M']))
-            scn_t = st.number_input("SCN Travel ($)", value=float(extracted_data['scn']['T']))
-    else:
-        top_cos = []
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-            omn_balance = st.number_input("OMN Balance ($)", value=44053.0)
-            omn_l = st.number_input("OMN Labor ($)", value=44053.0)
-            omn_m = st.number_input("OMN Material ($)", value=0.0)
-            omn_t = st.number_input("OMN Travel ($)", value=0.0)
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-            opn_balance = st.number_input("OPN Balance ($)", value=1947299.0)
-            opn_l = st.number_input("OPN Labor ($)", value=1947299.0)
-            opn_m = st.number_input("OPN Material ($)", value=0.0)
-            opn_t = st.number_input("OPN Travel ($)", value=0.0)
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-            scn_balance = st.number_input("SCN Balance ($)", value=1148438.0)
-            scn_l = st.number_input("SCN Labor ($)", value=813595.0)
-            scn_m = st.number_input("SCN Material ($)", value=334843.0)
-            scn_t = st.number_input("SCN Travel ($)", value=0.0)
-else:
-    top_cos = []
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-        omn_balance = st.number_input("OMN Balance ($)", value=44053.0)
-        omn_l = st.number_input("OMN Labor ($)", value=44053.0)
-        omn_m = st.number_input("OMN Material ($)", value=0.0)
-        omn_t = st.number_input("OMN Travel ($)", value=0.0)
-    
-    with col2:
-        st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-        opn_balance = st.number_input("OPN Balance ($)", value=1947299.0)
-        opn_l = st.number_input("OPN Labor ($)", value=1947299.0)
-        opn_m = st.number_input("OPN Material ($)", value=0.0)
-        opn_t = st.number_input("OPN Travel ($)", value=0.0)
-    
-    with col3:
-        st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-        scn_balance = st.number_input("SCN Balance ($)", value=1148438.0)
-        scn_l = st.number_input("SCN Labor ($)", value=813595.0)
-        scn_m = st.number_input("SCN Material ($)", value=334843.0)
-        scn_t = st.number_input("SCN Travel ($)", value=0.0)
-
-# Calculate Button
-if st.button("🚀 Calculate Analysis", type="primary"):
-    
-    # Core Calculations
-    report_datetime = datetime.combine(report_date, datetime.min.time())
-    
-    # Calculate expiry dates
-    omn_expiry = get_appropriation_expiry_date('OMN', fiscal_year)
-    opn_expiry = get_appropriation_expiry_date('OPN', fiscal_year)
-    scn_expiry = get_appropriation_expiry_date('SCN', fiscal_year)
-    
-    # Calculate working days to each expiry
-    omn_working_days = count_working_days(report_datetime, omn_expiry, fiscal_year)
-    opn_working_days = count_working_days(report_datetime, opn_expiry, fiscal_year)
-    scn_working_days = count_working_days(report_datetime, scn_expiry, fiscal_year)
-    
-    # Check expiring soon
-    omn_expiring_soon = is_expiring_soon(report_datetime, omn_expiry, 2)
-    opn_expiring_soon = is_expiring_soon(report_datetime, opn_expiry, 2)
-    scn_expiring_soon = is_expiring_soon(report_datetime, scn_expiry, 2)
-    
-    # Personnel calculations
-    monthly_personnel_cost = hourly_rate * hours_per_week * 4.3 * branch_size * (1 + overhead_rate / 100)
-    total_balance = omn_balance + opn_balance + scn_balance
-    
-    # URGENT ALERTS
-    urgent_appropriations = []
-    if omn_expiring_soon and omn_balance > 0:
-        urgent_appropriations.append(f"OMN (expires {omn_expiry.strftime('%b %d, %Y')} - {(omn_expiry - report_datetime).days} days)")
-    if opn_expiring_soon and opn_balance > 0:
-        urgent_appropriations.append(f"OPN (expires {opn_expiry.strftime('%b %d, %Y')} - {(opn_expiry - report_datetime).days} days)")
-    if scn_expiring_soon and scn_balance > 0:
-        urgent_appropriations.append(f"SCN (expires {scn_expiry.strftime('%b %d, %Y')} - {(scn_expiry - report_datetime).days} days)")
-    
-    if urgent_appropriations:
-        st.error(f"🚨 **URGENT EXPIRY ALERT**: {', '.join(urgent_appropriations)}")
-    
-    # SMART APPN CHARGING STRATEGY
-    st.markdown('<div class="bubble"><h3 style="text-align: center;">💡 Smart APPN Charging Strategy</h3><p style="text-align: center;">Use all funding before Dec 30 while maintaining operations</p></div>', unsafe_allow_html=True)
-    
-    # Calculate Dec 30 strategy
-    dec_30_date = datetime(fiscal_year, 12, 30)
-    months_to_dec30 = max((dec_30_date - report_datetime).days / 30.44, 0)
-    total_funding_needed_dec30 = monthly_personnel_cost * months_to_dec30
-    
-    # Create optimal charging strategy
-    charging_strategy = []
-    remaining_need = total_funding_needed_dec30
-    
-    # Sort by expiry date (use earliest first)
-    appn_data = [("OMN", omn_balance, omn_expiry), ("OPN", opn_balance, opn_expiry), ("SCN", scn_balance, scn_expiry)]
-    appn_data.sort(key=lambda x: x[2])
-    
-    cumulative_months = 0
-    for appn, balance, expiry in appn_data:
-        if balance > 0 and remaining_need > 0:
-            months_from_this_appn = min(balance / monthly_personnel_cost, remaining_need / monthly_personnel_cost)
-            
-            if months_from_this_appn > 0:
-                amount_to_use = months_from_this_appn * monthly_personnel_cost
-                start_date = report_datetime + timedelta(days=cumulative_months * 30.44)
-                end_date = report_datetime + timedelta(days=(cumulative_months + months_from_this_appn) * 30.44)
-                
-                days_until_expiry = (expiry - report_datetime).days
-                if days_until_expiry < 60:
-                    urgency = "🚨 URGENT"
-                    urgency_color = "#e74c3c"
-                elif days_until_expiry < 120:
-                    urgency = "⚠️ PRIORITY"
-                    urgency_color = "#f39c12"
-                else:
-                    urgency = "✅ PLANNED"
-                    urgency_color = "#27ae60"
-                
-                charging_strategy.append({
-                    'appn': appn, 'amount': amount_to_use, 'months': months_from_this_appn,
-                    'start_date': start_date, 'end_date': end_date, 'expiry_date': expiry,
-                    'urgency': urgency, 'urgency_color': urgency_color,
-                    'remaining_balance': balance - amount_to_use
-                })
-                
-                remaining_need -= amount_to_use
-                cumulative_months += months_from_this_appn
-    
-    # Display charging strategy
-    if charging_strategy:
-        st.markdown("### 📅 Month-by-Month Charging Plan")
-        
-        for i, strategy in enumerate(charging_strategy, 1):
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, {strategy["urgency_color"]}aa, {strategy["urgency_color"]}dd); color: white; padding: 1.5rem; border-radius: 15px; margin: 1rem 0;">
-                <h4>Phase {i}: Charge to {strategy["appn"]} {strategy["urgency"]}</h4>
-                <p><strong>📅 Timeframe:</strong> {strategy["start_date"].strftime("%b %d, %Y")} → {strategy["end_date"].strftime("%b %d, %Y")} ({strategy["months"]:.1f} months)</p>
-                <p><strong>💰 Funding:</strong> ${strategy["amount"]:,.0f} | <strong>Remaining:</strong> ${strategy["remaining_balance"]:,.0f}</p>
-                <p><strong>⏰ {strategy["appn"]} Expires:</strong> {strategy["expiry_date"].strftime("%b %d, %Y")} ({(strategy["expiry_date"] - report_datetime).days} days)</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # CURRENT MONTH RECOMMENDATION
-    current_month_rec = charging_strategy[0] if charging_strategy else None
-    if current_month_rec:
-        st.markdown("### 🎯 THIS MONTH'S CHARGING RECOMMENDATION")
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 2rem; border-radius: 15px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 2px solid white;">
-            <h2>💳 CHARGE ALL LABOR TO: {current_month_rec["appn"]}</h2>
-            <h3>{current_month_rec["urgency"]}</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Monthly Target</h4>
-                    <h3>${monthly_personnel_cost:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Use Through</h4>
-                    <h3>{current_month_rec["end_date"].strftime("%b %Y")}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Days Until Expiry</h4>
-                    <h3>{(current_month_rec["expiry_date"] - report_datetime).days}</h3>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Top 5 Chargeable Objects with expiry highlighting
-    if top_cos:
-        st.markdown("### 🎯 Top 5 Chargeable Objects with Expiry Status")
-        
-        for i, co in enumerate(top_cos):
-            expiry_date = get_appropriation_expiry_date(co['APPN'], fiscal_year)
-            days_to_expiry = (expiry_date - report_datetime).days
-            expiring_soon = is_expiring_soon(report_datetime, expiry_date, 2)
-            
-            urgency = "🚨 URGENT" if expiring_soon else "⚠️ MONITOR" if days_to_expiry < 120 else "✅ STABLE"
-            card_class = "urgent-expiry" if expiring_soon else "status-card"
-            
-            st.markdown(f"""
-            <div class="{card_class}" style="background: linear-gradient(135deg, #3498dbaa, #2980b9aa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                <h4>#{i+1}: {co["CO_Number"]} - {co["APPN"]}</h4>
-                <p><strong>Balance:</strong> ${co["Balance"]:,.0f}</p>
-                <p><strong>Expires:</strong> {expiry_date.strftime("%b %d, %Y")} ({days_to_expiry} days)</p>
-                <p><strong>Status:</strong> {urgency}</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Enhanced Appropriation Cards
-    st.markdown("### 📅 Individual Appropriation Analysis")
-    
-    col1, col2, col3 = st.columns(3)
-    colors = {'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60'}
-    
-    appropriations_data = [
-        ('OMN', omn_balance, omn_l, omn_m, omn_t, omn_expiry, omn_working_days, omn_expiring_soon),
-        ('OPN', opn_balance, opn_l, opn_m, opn_t, opn_expiry, opn_working_days, opn_expiring_soon),
-        ('SCN', scn_balance, scn_l, scn_m, scn_t, scn_expiry, scn_working_days, scn_expiring_soon)
-    ]
-    
-    for i, (appn, balance, l, m, t, expiry, working_days, expiring_soon) in enumerate(appropriations_data):
-        with [col1, col2, col3][i]:
-            card_class = "urgent-expiry" if expiring_soon else "normal-expiry"
-            days_left = (expiry - report_datetime).days
-            
-            # Calculate hours analysis for this appropriation to Dec 30
-            working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
-            hours_needed_to_dec30 = working_days_to_dec30 * 8 * branch_size
-            hours_available_appn = balance / hourly_rate if hourly_rate > 0 else 0
-            hours_excess_appn = hours_available_appn - hours_needed_to_dec30
-            
-            pulse_animation = "animation: pulse 2s infinite;" if expiring_soon else ""
-            
-            st.markdown(f"""
-            <div class="status-card {card_class}" style="background: linear-gradient(135deg, {colors[appn]}aa, {colors[appn]}dd);">
-                <h3>{appn} Appropriation</h3>
-                <p><strong>Expires: {expiry.strftime("%b %d, %Y")}</strong></p>
-                <p>🕒 {days_left} days ({working_days} working days)</p>
-                <h4>${balance:,.0f}</h4>
-                <p>Personnel Months: {balance/monthly_personnel_cost:.1f}</p>
-                <p>L: ${l:,.0f} | M: ${m:,.0f} | T: ${t:,.0f}</p>
-                {"<p style='font-weight: bold; " + pulse_animation + "'>🚨 EXPIRES SOON!</p>" if expiring_soon else ""}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Individual hours analysis box for each appropriation
-            excess_color = "green" if hours_excess_appn >= 0 else "red"
-            excess_text = "Excess" if hours_excess_appn >= 0 else "Deficit"
-            
-            st.markdown(f"""
-            <div style="background: rgba(255,255,255,0.15); border: 2px solid {colors[appn]}; border-radius: 10px; padding: 1rem; margin: 0.5rem 0; color: black;">
-                <h5 style="color: {colors[appn]}; margin: 0 0 0.5rem 0;">📊 {appn} Hours Analysis (to Dec 30)</h5>
-                <div style="display: grid; grid-template-columns: 1fr; gap: 0.3rem; font-size: 0.9em;">
-                    <div><strong>Hours Available:</strong> {hours_available_appn:,.0f}</div>
-                    <div><strong>Hours Needed:</strong> {hours_needed_to_dec30:,}</div>
-                    <div style="color: {excess_color};"><strong>Hours {excess_text}:</strong> {abs(hours_excess_appn):,.0f}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Combined Analysis Box - Total to Dec 30
-    st.markdown("### 🎯 Combined Branch Coverage Analysis (to Dec 30)")
-    
-    # Calculate total combined metrics to Dec 30
-    working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
-    total_hours_needed_dec30 = working_days_to_dec30 * 8 * branch_size
-    total_hours_available_dec30 = total_balance / hourly_rate if hourly_rate > 0 else 0
-    total_hours_excess_dec30 = total_hours_available_dec30 - total_hours_needed_dec30
-    
-    # Calculate coverage percentage
-    coverage_pct_dec30 = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
-    
-    # Determine status color based on coverage
-    if coverage_pct_dec30 >= 100:
-        status_color = "#27ae60"
-        status_text = "✅ FULLY COVERED"
-        status_message = "Branch operations secured through Dec 30"
-    elif coverage_pct_dec30 >= 80:
-        status_color = "#f39c12"
-        status_text = "⚠️ CAUTION"
-        status_message = "Adequate coverage but monitor closely"
-    else:
-        status_color = "#e74c3c"
-        status_text = "🚨 CRITICAL"
-        status_message = "Insufficient funding for full branch operations"
-    
-    # Create the status box
-    excess_deficit_text = "Excess" if total_hours_excess_dec30 >= 0 else "Deficit"
-    excess_color = "lightgreen" if total_hours_excess_dec30 >= 0 else "lightcoral"
-    
-    st.markdown(f"""
-    <div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
-        <h2>🎯 BRANCH OPERATIONS STATUS: {status_text}</h2>
-        <h3>{status_message}</h3>
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0;">
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Total Funding</h4>
-                <h3>${total_balance:,.0f}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours Available</h4>
-                <h3>{total_hours_available_dec30:,.0f}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours Needed</h4>
-                <h3>{total_hours_needed_dec30:,}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours {excess_deficit_text}</h4>
-                <h3 style="color: {excess_color};">{abs(total_hours_excess_dec30):,.0f}</h3>
-            </div>
-        </div>
-        <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
-            <h4>Branch Coverage to Dec 30: {coverage_pct_dec30:.1f}%</h4>
-            <p>Working Days Remaining: {working_days_to_dec30} | Branch Size: {branch_size} people</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Show breakdown by appropriation contribution
-    st.markdown("#### 📊 Funding Contribution Breakdown")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        omn_contribution = (omn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("OMN Contribution", f"{omn_contribution:.1f}%", f"${omn_balance:,.0f}")
-    
-    with col2:
-        opn_contribution = (opn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("OPN Contribution", f"{opn_contribution:.1f}%", f"${opn_balance:,.0f}")
-    
-    with col3:
-        scn_contribution = (scn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("SCN Contribution", f"{scn_contribution:.1f}%", f"${scn_balance:,.0f}")
-    
-    # Strategic recommendations based on combined analysis
-    if total_hours_excess_dec30 < 0:
-        shortfall_amount = abs(total_hours_excess_dec30) * hourly_rate
-        st.error(f"💰 **FUNDING SHORTFALL**: ${shortfall_amount:,.0f} additional funding needed for full branch operations through Dec 30")
-        
-        # Calculate what percentage of branch could be sustained
-        sustainable_percentage = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
-        sustainable_people = int(branch_size * sustainable_percentage / 100)
-        
-        st.warning(f"⚠️ **ALTERNATIVE**: Current funding can sustain {sustainable_people} people ({sustainable_percentage:.1f}% of branch) through Dec 30")
-        
-    elif total_hours_excess_dec30 > 0:
-        excess_amount = total_hours_excess_dec30 * hourly_rate
-        excess_months = total_hours_excess_dec30 / (8 * branch_size * 21.7)  # Average working days per month
-        
-        st.success(f"💡 **FUNDING SURPLUS**: ${excess_amount:,.0f} available for additional scope or {excess_months:.1f} extra months of operations")
-    
-    # Charts
-    st.markdown("### 📈 Financial Visualizations")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = go.Figure()
-        fig.add_trace(go.Bar(name='Labor', x=['OMN', 'OPN', 'SCN'], y=[omn_l, opn_l, scn_l], marker_color='#3498db'))
-        fig.add_trace(go.Bar(name='Material', x=['OMN', 'OPN', 'SCN'], y=[omn_m, opn_m, scn_m], marker_color='#e74c3c'))
-        fig.add_trace(go.Bar(name='Travel', x=['OMN', 'OPN', 'SCN'], y=[omn_t, opn_t, scn_t], marker_color='#f39c12'))
-        fig.update_layout(title="L/M/T Breakdown", barmode='stack', height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig2 = px.bar(x=['OMN', 'OPN', 'SCN'], y=[omn_balance, opn_balance, scn_balance], 
-                      title="Balance by Appropriation", color=['OMN', 'OPN', 'SCN'], 
-                      color_discrete_map=colors, height=400)
-        fig2.update_layout(showlegend=False)
-        st.plotly_chart(fig2, use_container_width=True)
-    
-    # Benedicks Analysis Charts (if enabled and data available)
-    if enable_pm_analysis and st.session_state.benedicks_data:
-        st.markdown("### 📊 Benedicks Portfolio Visualizations")
-        benedicks_data = st.session_state.benedicks_data
-        benedicks_projects = st.session_state.benedicks_projects
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Benedicks Portfolio by Appropriation
-            summary = benedicks_data['summary']
-            appn_balances = [summary['omn']['balance'], summary['opn']['balance'], summary['scn']['balance'], summary['other']['balance']]
-            appn_names = ['OMN', 'OPN', 'SCN', 'Other']
-            
-            # Filter out zero balances for cleaner pie chart
-            filtered_data = [(name, balance) for name, balance in zip(appn_names, appn_balances) if balance > 0]
-            if filtered_data:
-                names, balances = zip(*filtered_data)
-                fig3 = px.pie(values=balances, names=names, 
-                             title="Benedicks Portfolio by Appropriation",
-                             color_discrete_map={'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60', 'Other': '#9b59b6'})
-                st.plotly_chart(fig3, use_container_width=True)
-        
-        with col2:
-            # Top Benedicks BL Codes
-            if benedicks_data['bl_codes']:
-                top_bl_codes = benedicks_data['bl_codes'][:8]  # Top 8 for readability
-                bl_names = [bl[0][:20] + "..." if len(bl[0]) > 20 else bl[0] for bl, _ in top_bl_codes]  # Truncate long names
-                bl_balances = [bl_data['balance'] for _, bl_data in top_bl_codes]
-                
-                fig4 = px.bar(x=bl_names, y=bl_balances,
-                             title="Top Benedicks BL Codes by Balance",
-                             color=bl_balances,
-                             color_continuous_scale='viridis')
-                fig4.update_layout(showlegend=False, xaxis_tickangle=-45, 
-                                 xaxis_title="BL Code", yaxis_title="Balance ($)")
-                st.plotly_chart(fig4, use_container_width=True)
-        
-        # Additional Benedicks analysis charts
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            # Project count by appropriation
-            appn_counts = [summary['omn']['count'], summary['opn']['count'], summary['scn']['count'], summary['other']['count']]
-            filtered_count_data = [(name, count) for name, count in zip(appn_names, appn_counts) if count > 0]
-            if filtered_count_data:
-                names, counts = zip(*filtered_count_data)
-                fig5 = px.bar(x=names, y=counts,
-                             title="Benedicks Project Count by Appropriation",
-                             color=names,
-                             color_discrete_map={'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60', 'Other': '#9b59b6'})
-                fig5.update_layout(showlegend=False, yaxis_title="Number of Projects")
-                st.plotly_chart(fig5, use_container_width=True)
-        
-        with col4:
-            # L/M/T breakdown for Benedicks portfolio
-            lmt_data = {
-                'Type': ['Labor', 'Material', 'Travel'],
-                'OMN': [summary['omn']['L'], summary['omn']['M'], summary['omn']['T']],
-                'OPN': [summary['opn']['L'], summary['opn']['M'], summary['opn']['T']],
-                'SCN': [summary['scn']['L'], summary['scn']['M'], summary['scn']['T']]
-            }
-            
-            fig6 = go.Figure()
-            fig6.add_trace(go.Bar(name='OMN', x=lmt_data['Type'], y=lmt_data['OMN'], marker_color='#e74c3c'))
-            fig6.add_trace(go.Bar(name='OPN', x=lmt_data['Type'], y=lmt_data['OPN'], marker_color='#f39c12'))
-            fig6.add_trace(go.Bar(name='SCN', x=lmt_data['Type'], y=lmt_data['SCN'], marker_color='#27ae60'))
-            fig6.update_layout(title="Benedicks Portfolio L/M/T Breakdown", barmode='stack', height=400)
-            st.plotly_chart(fig6, use_container_width=True)
-    
-    # Export
-    st.markdown("### 📤 Export Results")
-    
-    export_data = {
-        'Metric': ['Total Balance', 'Monthly Personnel Cost', 'Months to Dec 30', 'OMN Balance', 'OMN Expiry', 'OPN Balance', 'OPN Expiry', 'SCN Balance', 'SCN Expiry'],
-        'Value': [f"${total_balance:,.0f}", f"${monthly_personnel_cost:,.0f}", f"{months_to_dec30:.1f}", 
-                 f"${omn_balance:,.0f}", omn_expiry.strftime('%Y-%m-%d'), f"${opn_balance:,.0f}", 
-                 opn_expiry.strftime('%Y-%m-%d'), f"${scn_balance:,.0f}", scn_expiry.strftime('%Y-%m-%d')]
-    }
-    
-    csv_buffer = io.StringIO()
-    pd.DataFrame(export_data).to_csv(csv_buffer, index=False)
-    
-    # Export Benedicks data if available
-    benedicks_export_available = False
-    if enable_pm_analysis and st.session_state.benedicks_projects:
-        benedicks_projects = st.session_state.benedicks_projects
-        benedicks_export_data = []
-        for project in benedicks_projects:
-            benedicks_export_data.append({
-                'PM': project['PM'],
-                'APPN': project['APPN'],
-                'Type': project['Type'],
-                'Balance': project['Balance'],
-                'BL_Code': project['BL_Code'],
-                'Description': project['Description']
-            })
-        
-        benedicks_csv_buffer = io.StringIO()
-        pd.DataFrame(benedicks_export_data).to_csv(benedicks_csv_buffer, index=False)
-        benedicks_export_available = True
-    
-    if charging_strategy:
-        strategy_export = []
-        for i, strategy in enumerate(charging_strategy, 1):
-            strategy_export.append({
-                'Phase': i, 'APPN': strategy['appn'], 'Start_Date': strategy['start_date'].strftime('%Y-%m-%d'),
-                'End_Date': strategy['end_date'].strftime('%Y-%m-%d'), 'Amount': strategy['amount'],
-                'Expiry_Date': strategy['expiry_date'].strftime('%Y-%m-%d'), 'Urgency': strategy['urgency']
-            })
-        
-        strategy_csv_buffer = io.StringIO()
-        pd.DataFrame(strategy_export).to_csv(strategy_csv_buffer, index=False)
-        
-        if benedicks_export_available:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
+        # Strategic Overview Card
+        if personal_funding > other_funding:
+            strat_status, strat_color, strat_msg = "✅ GOOD", "#27ae60", "You hold more funding than you've given out."
+        elif personal_funding > other_funding * 0.75:
+            strat_status, strat_color, strat_msg = "⚠️ MONITOR", "#f39c12", "Your funding is balanced, but monitor funds given out."
         else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-    else:
-        if benedicks_export_available:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                             f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-
-# Footer
-st.markdown("---")
-st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging, Expiry Analysis & Benedicks Portfolio Analysis</p></div>', unsafe_allow_html=True), '').replace(',', '').strip()
-                balance = float(balance_str) if balance_str and balance_str != 'nan' else 0.0
-                
-                # Track individual projects
-                benedicks_projects.append({
-                    'PM': pm_name,
-                    'APPN': appn,
-                    'Type': type_code,
-                    'Balance': balance,
-                    'BL_Code': bl_code,
-                    'Description': project_desc
-                })
-                
-                # Track BL code summaries
-                if bl_code not in bl_code_summary:
-                    bl_code_summary[bl_code] = {'balance': 0.0, 'count': 0, 'types': {}}
-                bl_code_summary[bl_code]['balance'] += balance
-                bl_code_summary[bl_code]['count'] += 1
-                
-                if type_code not in bl_code_summary[bl_code]['types']:
-                    bl_code_summary[bl_code]['types'][type_code] = {'balance': 0.0, 'count': 0}
-                bl_code_summary[bl_code]['types'][type_code]['balance'] += balance
-                bl_code_summary[bl_code]['types'][type_code]['count'] += 1
-                
-            except:
-                balance = 0.0
-                continue
-            
-            # Determine appropriation category
-            if 'OMN' in appn:
-                appn_key = 'omn'
-            elif 'SCN' in appn:
-                appn_key = 'scn'
-            elif 'OPN' in appn:
-                appn_key = 'opn'
-            else:
-                appn_key = 'other'
-            
-            result[appn_key]['balance'] += balance
-            result[appn_key]['count'] += 1
-            
-            # Distribute by type
-            if type_code == 'L':
-                result[appn_key]['L'] += balance
-            elif type_code == 'M':
-                result[appn_key]['M'] += balance
-            elif type_code == 'T':
-                result[appn_key]['T'] += balance
-            else:
-                # If type is unclear, distribute proportionally
-                result[appn_key]['L'] += balance * 0.6
-                result[appn_key]['M'] += balance * 0.3
-                result[appn_key]['T'] += balance * 0.1
+            strat_status, strat_color, strat_msg = "🚨 REALLOCATE?", "#e74c3c", "Consider pulling funds back from other branches."
         
-        # Sort projects by balance
-        benedicks_projects = sorted(benedicks_projects, key=lambda x: x['Balance'], reverse=True)
-        
-        # Sort BL codes by balance
-        top_bl_codes = sorted(bl_code_summary.items(), key=lambda x: x[1]['balance'], reverse=True)[:10]
-        
-        total_balance = sum([result[key]['balance'] for key in result.keys()])
-        total_count = len(benedicks_projects)
-        
-        return {
-            'summary': result,
-            'projects': benedicks_projects,
-            'bl_codes': top_bl_codes,
-            'total_balance': total_balance,
-            'total_count': total_count
-        }, f"✅ Found {total_count} Benedicks projects (non-BL12200) worth ${total_balance:,.0f}", benedicks_projects
-        
-    except Exception as e:
-        return None, f"❌ Error analyzing Benedicks portfolio: {str(e)}", []
-
-def extract_vla_data(file, target_bl):
-    try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
-        bl_data = df[df.iloc[:, 8].astype(str).str.contains(target_bl, na=False)]
-        
-        if bl_data.empty:
-            return None, f"No data found for {target_bl}", []
-        
-        result = {'omn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
-                 'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
-                 'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0}}
-        
-        chargeable_objects = []
-        
-        for _, row in bl_data.iterrows():
-            appn = str(row.iloc[2]).upper()
-            type_code = str(row.iloc[1]).upper().strip()
-            co_number = str(row.iloc[3]) if len(df.columns) > 3 else "Unknown"
-            
-            try:
-                balance = float(str(row.iloc[16]).replace('$', '').replace(',', '').strip() or 0)
-                
-                if balance > 0:
-                    chargeable_objects.append({'CO_Number': co_number, 'APPN': appn, 'Type': type_code, 'Balance': balance})
-            except:
-                continue
-            
-            appn_key = 'omn' if 'OMN' in appn else 'scn' if 'SCN' in appn else 'opn'
-            result[appn_key]['balance'] += balance
-            
-            if type_code == 'L': result[appn_key]['L'] += balance
-            elif type_code == 'M': result[appn_key]['M'] += balance
-            elif type_code == 'T': result[appn_key]['T'] += balance
-            else:
-                result[appn_key]['L'] += balance * 0.6
-                result[appn_key]['M'] += balance * 0.3
-                result[appn_key]['T'] += balance * 0.1
-        
-        top_cos = sorted(chargeable_objects, key=lambda x: x['Balance'], reverse=True)[:5]
-        return result, f"✅ Extracted data for {target_bl}", top_cos
-    except Exception as e:
-        return None, f"❌ Error: {str(e)}", []
-
-# Initialize session state
-if 'extracted_data' not in st.session_state:
-    st.session_state.extracted_data = None
-if 'last_bl_code' not in st.session_state:
-    st.session_state.last_bl_code = None
-if 'top_cos' not in st.session_state:
-    st.session_state.top_cos = []
-if 'benedicks_data' not in st.session_state:
-    st.session_state.benedicks_data = None
-if 'benedicks_projects' not in st.session_state:
-    st.session_state.benedicks_projects = []
-if 'personal_funding_data' not in st.session_state:
-    st.session_state.personal_funding_data = None
-
-# Personal Funding Analysis Section (if enabled and file uploaded)
-if enable_personal_funding and uploaded_file:
-    st.markdown("### 💼 Personal Funding Portfolio Analysis")
-    
-    # Analyze personal funding data
-    personal_analysis, personal_message, personal_projects = analyze_personal_funding_portfolio(uploaded_file)
-    st.session_state.personal_funding_data = personal_analysis
-    
-    if personal_analysis:
-        st.success(personal_message)
-        
-        # Main Portfolio Overview
-        total_available = personal_analysis['total_available_funding']
-        bl16200_funding = personal_analysis['bl16200_funding']
-        other_branches_funding = personal_analysis['other_branches_funding']
-        bl12200_funding = personal_analysis['bl12200_funding']
-        total_projects = personal_analysis['total_projects']
-        
-        # Portfolio Overview Card
         st.markdown(f"""
-        <div class="pm-analysis-card">
-            <h3>💼 Your Complete Funding Portfolio</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
+        <div class="pm-analysis-card" style="border-color: {strat_color};">
+            <h3>📈 Strategic Portfolio Status: <span style="color: {strat_color};">{strat_status}</span></h3>
+            <p style="font-size: 1.1em;">{strat_msg}</p>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 1rem;">
                 <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Available Funding</h4>
-                    <h3>${total_available:,.0f}</h3>
-                    <small>(Excluding BL12200)</small>
+                    <h4>Your 'Home' Branch</h4><h3>${personal_funding:,.0f}</h3>
                 </div>
                 <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>BL16200 (Your Branch)</h4>
-                    <h3>${bl16200_funding:,.0f}</h3>
-                    <small>{bl16200_funding/total_available*100:.1f}% of total</small>
+                    <h4>Funded to Others</h4><h3>${other_funding:,.0f}</h3>
                 </div>
                 <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Other Branches</h4>
-                    <h3>${other_branches_funding:,.0f}</h3>
-                    <small>{other_branches_funding/total_available*100:.1f}% of total</small>
+                    <h4>Total Portfolio Value</h4><h3>${total_portfolio_balance:,.0f}</h3>
                 </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>BL12200 (Managed)</h4>
-                    <h3>${bl12200_funding:,.0f}</h3>
-                    <small>Excluded from analysis</small>
+                 <div style="background: rgba(255,255,255,0.1); padding: 1rem; border-radius: 10px;">
+                    <h4>Managed (Excluded)</h4><h3>${managed_funding:,.0f}</h3>
                 </div>
             </div>
         </div>
         """, unsafe_allow_html=True)
-        
-        # Detailed Breakdown by Category
-        categories = personal_analysis['categories']
-        
+
+        # Detailed Breakdown
         st.markdown("#### 📊 Funding Breakdown by Category")
-        
         col1, col2 = st.columns(2)
         
         with col1:
-            st.markdown("##### 🎯 BL16200 (Your Personal Branch)")
-            bl16200_cat = categories['bl16200']
-            st.write(f"**Projects:** {bl16200_cat['total_count']}")
-            st.write(f"**Total Balance:** ${bl16200_cat['total_balance']:,.0f}")
-            
-            if bl16200_cat['total_count'] > 0:
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    st.metric("OMN", f"${bl16200_cat['omn']['balance']:,.0f}", f"{bl16200_cat['omn']['count']} projects")
-                with col_b:
-                    st.metric("OPN", f"${bl16200_cat['opn']['balance']:,.0f}", f"{bl16200_cat['opn']['count']} projects")
-                with col_c:
-                    st.metric("SCN", f"${bl16200_cat['scn']['balance']:,.0f}", f"{bl16200_cat['scn']['count']} projects")
-        
+            st.markdown(f"##### 🎯 {personal_bl_filter} (Your Home Branch)")
+            p_cat = cats['personal']
+            st.metric(label="Total Balance", value=f"${p_cat['total_balance']:,.0f}", delta=f"{p_cat['total_count']} projects")
+            if p_cat['total_count'] > 0:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("OMN", f"${p_cat['omn']['balance']:,.0f}", f"{p_cat['omn']['count']} projects")
+                c2.metric("OPN", f"${p_cat['opn']['balance']:,.0f}", f"{p_cat['opn']['count']} projects")
+                c3.metric("SCN", f"${p_cat['scn']['balance']:,.0f}", f"{p_cat['scn']['count']} projects")
+
         with col2:
-            st.markdown("##### 🏢 Other Branches (Money Given Out)")
-            other_cat = categories['other_branches']
-            st.write(f"**Projects:** {other_cat['total_count']}")
-            st.write(f"**Total Balance:** ${other_cat['total_balance']:,.0f}")
-            
-            if other_cat['total_count'] > 0:
-                col_a, col_b, col_c = st.columns(3)
-                with col_a:
-                    st.metric("OMN", f"${other_cat['omn']['balance']:,.0f}", f"{other_cat['omn']['count']} projects")
-                with col_b:
-                    st.metric("OPN", f"${other_cat['opn']['balance']:,.0f}", f"{other_cat['opn']['count']} projects")
-                with col_c:
-                    st.metric("SCN", f"${other_cat['scn']['balance']:,.0f}", f"{other_cat['scn']['count']} projects")
-        
-        # BL Code Breakdown for Other Branches
-        if personal_analysis['bl_code_breakdown']:
-            st.markdown("#### 🏗️ Other Branches - BL Code Breakdown")
-            st.info("💡 These are departments where you've allocated funding. Monitor these to see if you need to pull money back.")
-            
-            for i, (bl_code, bl_data) in enumerate(personal_analysis['bl_code_breakdown'][:8]):
-                percentage_of_other = (bl_data['balance'] / other_branches_funding * 100) if other_branches_funding > 0 else 0
-                
+            st.markdown("##### 🏢 Other Branches (Funded by You)")
+            o_cat = cats['other']
+            st.metric(label="Total Balance", value=f"${o_cat['total_balance']:,.0f}", delta=f"{o_cat['total_count']} projects")
+            if o_cat['total_count'] > 0:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("OMN", f"${o_cat['omn']['balance']:,.0f}", f"{o_cat['omn']['count']} projects")
+                c2.metric("OPN", f"${o_cat['opn']['balance']:,.0f}", f"{o_cat['opn']['count']} projects")
+                c3.metric("SCN", f"${o_cat['scn']['balance']:,.0f}", f"{o_cat['scn']['count']} projects")
+
+        # Top Funded 'Other' Branches
+        if pm_analysis['other_bl_code_breakdown']:
+            st.markdown("#### 🏗️ Top Branches Funded by You")
+            st.info("💡 Monitor these departments to assess performance and see if you need to reclaim funding.")
+            for i, (bl_code, bl_data) in enumerate(pm_analysis['other_bl_code_breakdown'][:5]):
                 st.markdown(f"""
                 <div style="background: linear-gradient(135deg, #34495eaa, #2c3e50aa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {bl_code}</h5>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
-                        <div><strong>Balance:</strong> ${bl_data["balance"]:,.0f}</div>
-                        <div><strong>Projects:</strong> {bl_data["count"]}</div>
-                        <div><strong>% of Other Funding:</strong> {percentage_of_other:.1f}%</div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <h5 style="margin:0;">#{i+1}: {bl_code}</h5>
+                        <div>
+                            <span style="margin-right: 1rem;"><strong>Projects:</strong> {bl_data["count"]}</span>
+                            <span><strong>Balance:</strong> ${bl_data["balance"]:,.0f}</span>
+                        </div>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-        
-        # Strategic Analysis
-        st.markdown("#### 🎯 Strategic Funding Analysis")
-        
-        # Calculate funding adequacy
-        if bl16200_funding > other_branches_funding:
-            funding_status = "✅ GOOD POSITION"
-            status_color = "#27ae60"
-            status_message = "You have more funding in your branch than given to others"
-        elif bl16200_funding > other_branches_funding * 0.8:
-            funding_status = "⚠️ MONITOR CLOSELY"
-            status_color = "#f39c12"
-            status_message = "Funding levels are balanced but monitor other branches"
-        else:
-            funding_status = "🚨 CONSIDER REALLOCATION"
-            status_color = "#e74c3c"
-            status_message = "You may need to pull funding from other branches"
-        
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
-            <h2>💰 FUNDING STATUS: {funding_status}</h2>
-            <h3>{status_message}</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Your Branch Ratio</h4>
-                    <h3>{bl16200_funding/total_available*100:.1f}%</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Other Branches Ratio</h4>
-                    <h3>{other_branches_funding/total_available*100:.1f}%</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Potential to Reclaim</h4>
-                    <h3>${other_branches_funding:,.0f}</h3>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Top Personal Projects
-        if personal_projects:
-            st.markdown("#### 🏆 Top Personal Projects (All Categories)")
-            for i, project in enumerate(personal_projects[:8]):
-                category_color = "#3498db" if "BL16200" in project['Category'] else "#e67e22"
-                
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, {category_color}aa, {category_color}dd); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {project["BL_Code"]} ({project["Category"]})</h5>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
-                        <div><strong>APPN:</strong> {project["APPN"]}</div>
-                        <div><strong>Type:</strong> {project["Type"]}</div>
-                        <div><strong>Balance:</strong> ${project["Balance"]:,.0f}</div>
-                    </div>
-                    <p style="margin-top: 0.5rem;"><strong>Description:</strong> {project["Description"][:80]}{"..." if len(project["Description"]) > 80 else ""}</p>
-                </div>
-                """, unsafe_allow_html=True)
     else:
-        st.warning(personal_message)
+        st.warning(pm_message)
 
-# Benedicks Portfolio Analysis Section (if enabled and file uploaded)
-if enable_pm_analysis and uploaded_file:
-    st.markdown("### 👨‍💼 Benedicks Portfolio Analysis (Non-BL12200)")
-    
-    # Analyze Benedicks portfolio data
-    benedicks_analysis, benedicks_message, benedicks_projects = analyze_benedicks_portfolio(uploaded_file)
-    st.session_state.benedicks_data = benedicks_analysis
-    st.session_state.benedicks_projects = benedicks_projects
-    
-    if benedicks_analysis:
-        st.success(benedicks_message)
-        
-        # Display comprehensive summary
-        total_balance = benedicks_analysis['total_balance']
-        total_count = benedicks_analysis['total_count']
-        summary = benedicks_analysis['summary']
-        
-        # Main Benedicks Portfolio Card
-        st.markdown(f"""
-        <div class="pm-analysis-card">
-            <h3>🎯 Benedicks Portfolio Analysis (Excluding BL12200)</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Projects</h4>
-                    <h3>{total_count}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Portfolio Value</h4>
-                    <h3>${total_balance:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Avg Project Size</h4>
-                    <h3>${total_balance/total_count:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Personnel Months</h4>
-                    <h3>{total_balance/(hourly_rate * hours_per_week * 4.3 * (1 + overhead_rate / 100)):,.1f}</h3>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Appropriation breakdown for Benedicks portfolio
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['omn']['count']}")
-            st.write(f"**Balance:** ${summary['omn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['omn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['omn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['omn']['T']:,.0f}")
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['opn']['count']}")
-            st.write(f"**Balance:** ${summary['opn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['opn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['opn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['opn']['T']:,.0f}")
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['scn']['count']}")
-            st.write(f"**Balance:** ${summary['scn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['scn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['scn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['scn']['T']:,.0f}")
-        
-        with col4:
-            st.markdown('<div class="metric-card"><h4>Other - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['other']['count']}")
-            st.write(f"**Balance:** ${summary['other']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['other']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['other']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['other']['T']:,.0f}")
-        
-        # Top BL Codes Analysis
-        if benedicks_analysis['bl_codes']:
-            st.markdown("#### 🏗️ Top BL Codes in Benedicks Portfolio")
-            for i, (bl_code, bl_data) in enumerate(benedicks_analysis['bl_codes'][:5]):
-                type_breakdown = ""
-                for type_code, type_data in bl_data['types'].items():
-                    if type_code.strip():
-                        type_breakdown += f'<span style="background: rgba(255,255,255,0.2); padding: 0.3rem 0.6rem; border-radius: 5px; font-size: 0.9em; margin-right: 0.5rem;">{type_code}: ${type_data["balance"]:,.0f}</span>'
-                
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #2c3e50aa, #34495eaa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {bl_code}</h5>
-                    <p><strong>Projects:</strong> {bl_data["count"]} | <strong>Total Balance:</strong> ${bl_data["balance"]:,.0f}</p>
-                    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">{type_breakdown}</div>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Top Individual Projects
-        if benedicks_projects:
-            st.markdown("#### 🎯 Top Benedicks Projects")
-            for i, project in enumerate(benedicks_projects[:10]):
-                description = project["Description"][:100] + "..." if len(project["Description"]) > 100 else project["Description"]
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #8e44adaa, #9b59b6aa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {project["BL_Code"]}</h5>
-                    <p><strong>PM:</strong> {project["PM"]} | <strong>APPN:</strong> {project["APPN"]} | <strong>Type:</strong> {project["Type"]}</p>
-                    <p><strong>Balance:</strong> ${project["Balance"]:,.0f}</p>
-                    <p><strong>Description:</strong> {description}</p>
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        st.warning(benedicks_message)
+st.markdown("---")
 
-# Data Input Section - Auto-extract when BL code changes
+# --- Main Branch Analysis Section ---
+st.markdown(f"### 🗂️ Branch Analysis for {selected_bl}")
+
+# Auto-extract data when file or BL code changes
 if uploaded_file:
     if st.session_state.last_bl_code != selected_bl:
         extracted_data, message, top_cos = extract_vla_data(uploaded_file, selected_bl)
@@ -2604,1598 +361,203 @@ if uploaded_file:
     else:
         extracted_data = st.session_state.extracted_data
         top_cos = st.session_state.top_cos
-    
-    if extracted_data:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-            omn_balance = st.number_input("OMN Balance ($)", value=float(extracted_data['omn']['balance']))
-            omn_l = st.number_input("OMN Labor ($)", value=float(extracted_data['omn']['L']))
-            omn_m = st.number_input("OMN Material ($)", value=float(extracted_data['omn']['M']))
-            omn_t = st.number_input("OMN Travel ($)", value=float(extracted_data['omn']['T']))
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-            opn_balance = st.number_input("OPN Balance ($)", value=float(extracted_data['opn']['balance']))
-            opn_l = st.number_input("OPN Labor ($)", value=float(extracted_data['opn']['L']))
-            opn_m = st.number_input("OPN Material ($)", value=float(extracted_data['opn']['M']))
-            opn_t = st.number_input("OPN Travel ($)", value=float(extracted_data['opn']['T']))
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-            scn_balance = st.number_input("SCN Balance ($)", value=float(extracted_data['scn']['balance']))
-            scn_l = st.number_input("SCN Labor ($)", value=float(extracted_data['scn']['L']))
-            scn_m = st.number_input("SCN Material ($)", value=float(extracted_data['scn']['M']))
-            scn_t = st.number_input("SCN Travel ($)", value=float(extracted_data['scn']['T']))
-    else:
-        top_cos = []
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-            omn_balance = st.number_input("OMN Balance ($)", value=44053.0)
-            omn_l = st.number_input("OMN Labor ($)", value=44053.0)
-            omn_m = st.number_input("OMN Material ($)", value=0.0)
-            omn_t = st.number_input("OMN Travel ($)", value=0.0)
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-            opn_balance = st.number_input("OPN Balance ($)", value=1947299.0)
-            opn_l = st.number_input("OPN Labor ($)", value=1947299.0)
-            opn_m = st.number_input("OPN Material ($)", value=0.0)
-            opn_t = st.number_input("OPN Travel ($)", value=0.0)
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-            scn_balance = st.number_input("SCN Balance ($)", value=1148438.0)
-            scn_l = st.number_input("SCN Labor ($)", value=813595.0)
-            scn_m = st.number_input("SCN Material ($)", value=334843.0)
-            scn_t = st.number_input("SCN Travel ($)", value=0.0)
 else:
+    extracted_data = None
     top_cos = []
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-        omn_balance = st.number_input("OMN Balance ($)", value=44053.0)
-        omn_l = st.number_input("OMN Labor ($)", value=44053.0)
-        omn_m = st.number_input("OMN Material ($)", value=0.0)
-        omn_t = st.number_input("OMN Travel ($)", value=0.0)
-    
-    with col2:
-        st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-        opn_balance = st.number_input("OPN Balance ($)", value=1947299.0)
-        opn_l = st.number_input("OPN Labor ($)", value=1947299.0)
-        opn_m = st.number_input("OPN Material ($)", value=0.0)
-        opn_t = st.number_input("OPN Travel ($)", value=0.0)
-    
-    with col3:
-        st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-        scn_balance = st.number_input("SCN Balance ($)", value=1148438.0)
-        scn_l = st.number_input("SCN Labor ($)", value=813595.0)
-        scn_m = st.number_input("SCN Material ($)", value=334843.0)
-        scn_t = st.number_input("SCN Travel ($)", value=0.0)
 
-# Calculate Button
-if st.button("🚀 Calculate Analysis", type="primary"):
-    
+# Data Input Fields (pre-filled if data extracted, otherwise default)
+col1, col2, col3 = st.columns(3)
+omn_default = {'balance': 44053.0, 'L': 44053.0, 'M': 0.0, 'T': 0.0}
+opn_default = {'balance': 1947299.0, 'L': 1947299.0, 'M': 0.0, 'T': 0.0}
+scn_default = {'balance': 1148438.0, 'L': 813595.0, 'M': 334843.0, 'T': 0.0}
+
+data_source = extracted_data if extracted_data else {'omn': omn_default, 'opn': opn_default, 'scn': scn_default}
+
+with col1:
+    st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
+    omn_balance = st.number_input("OMN Balance ($)", value=float(data_source['omn']['balance']))
+    omn_l = st.number_input("OMN Labor ($)", value=float(data_source['omn']['L']))
+    omn_m = st.number_input("OMN Material ($)", value=float(data_source['omn']['M']))
+    omn_t = st.number_input("OMN Travel ($)", value=float(data_source['omn']['T']))
+
+with col2:
+    st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
+    opn_balance = st.number_input("OPN Balance ($)", value=float(data_source['opn']['balance']))
+    opn_l = st.number_input("OPN Labor ($)", value=float(data_source['opn']['L']))
+    opn_m = st.number_input("OPN Material ($)", value=float(data_source['opn']['M']))
+    opn_t = st.number_input("OPN Travel ($)", value=float(data_source['opn']['T']))
+
+with col3:
+    st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
+    scn_balance = st.number_input("SCN Balance ($)", value=float(data_source['scn']['balance']))
+    scn_l = st.number_input("SCN Labor ($)", value=float(data_source['scn']['L']))
+    scn_m = st.number_input("SCN Material ($)", value=float(data_source['scn']['M']))
+    scn_t = st.number_input("SCN Travel ($)", value=float(data_source['scn']['T']))
+
+# --- Calculate & Display Results ---
+if st.button("🚀 Calculate Full Analysis", type="primary", use_container_width=True):
     # Core Calculations
     report_datetime = datetime.combine(report_date, datetime.min.time())
     
-    # Calculate expiry dates
+    # Expiry dates
     omn_expiry = get_appropriation_expiry_date('OMN', fiscal_year)
     opn_expiry = get_appropriation_expiry_date('OPN', fiscal_year)
     scn_expiry = get_appropriation_expiry_date('SCN', fiscal_year)
-    
-    # Calculate working days to each expiry
+
+    # Working days
     omn_working_days = count_working_days(report_datetime, omn_expiry, fiscal_year)
     opn_working_days = count_working_days(report_datetime, opn_expiry, fiscal_year)
     scn_working_days = count_working_days(report_datetime, scn_expiry, fiscal_year)
-    
-    # Check expiring soon
+
+    # Expiring soon checks
     omn_expiring_soon = is_expiring_soon(report_datetime, omn_expiry, 2)
     opn_expiring_soon = is_expiring_soon(report_datetime, opn_expiry, 2)
     scn_expiring_soon = is_expiring_soon(report_datetime, scn_expiry, 2)
     
     # Personnel calculations
-    monthly_personnel_cost = hourly_rate * hours_per_week * 4.3 * branch_size * (1 + overhead_rate / 100)
+    monthly_personnel_cost = hourly_rate * hours_per_week * 4.333 * branch_size * (1 + overhead_rate / 100)
     total_balance = omn_balance + opn_balance + scn_balance
-    
-    # URGENT ALERTS
+
+    # --- URGENT ALERTS ---
     urgent_appropriations = []
-    if omn_expiring_soon and omn_balance > 0:
-        urgent_appropriations.append(f"OMN (expires {omn_expiry.strftime('%b %d, %Y')} - {(omn_expiry - report_datetime).days} days)")
-    if opn_expiring_soon and opn_balance > 0:
-        urgent_appropriations.append(f"OPN (expires {opn_expiry.strftime('%b %d, %Y')} - {(opn_expiry - report_datetime).days} days)")
-    if scn_expiring_soon and scn_balance > 0:
-        urgent_appropriations.append(f"SCN (expires {scn_expiry.strftime('%b %d, %Y')} - {(scn_expiry - report_datetime).days} days)")
+    if omn_expiring_soon and omn_balance > 0: urgent_appropriations.append(f"OMN (expires {omn_expiry.strftime('%b %d')})")
+    if opn_expiring_soon and opn_balance > 0: urgent_appropriations.append(f"OPN (expires {opn_expiry.strftime('%b %d')})")
+    if scn_expiring_soon and scn_balance > 0: urgent_appropriations.append(f"SCN (expires {scn_expiry.strftime('%b %d')})")
     
     if urgent_appropriations:
-        st.error(f"🚨 **URGENT EXPIRY ALERT**: {', '.join(urgent_appropriations)}")
+        st.error(f"🚨 **URGENT EXPIRY ALERT**: {', '.join(urgent_appropriations)} are expiring within 2 months!")
     
-    # SMART APPN CHARGING STRATEGY
-    st.markdown('<div class="bubble"><h3 style="text-align: center;">💡 Smart APPN Charging Strategy</h3><p style="text-align: center;">Use all funding before Dec 30 while maintaining operations</p></div>', unsafe_allow_html=True)
-    
-    # Calculate Dec 30 strategy
-    dec_30_date = datetime(fiscal_year, 12, 30)
-    months_to_dec30 = max((dec_30_date - report_datetime).days / 30.44, 0)
-    total_funding_needed_dec30 = monthly_personnel_cost * months_to_dec30
+    # --- SMART APPN CHARGING STRATEGY ---
+    st.markdown('<div class="bubble"><h3 style="text-align: center;">💡 Smart APPN Charging Strategy</h3><p style="text-align: center;">This prioritizes spending funds that expire the soonest to ensure no money is lost.</p></div>', unsafe_allow_html=True)
     
     # Create optimal charging strategy
     charging_strategy = []
-    remaining_need = total_funding_needed_dec30
-    
-    # Sort by expiry date (use earliest first)
-    appn_data = [("OMN", omn_balance, omn_expiry), ("OPN", opn_balance, opn_expiry), ("SCN", scn_balance, scn_expiry)]
-    appn_data.sort(key=lambda x: x[2])
+    appn_data = [
+        ("OMN", omn_balance, omn_expiry), 
+        ("OPN", opn_balance, opn_expiry), 
+        ("SCN", scn_balance, scn_expiry)
+    ]
+    appn_data.sort(key=lambda x: x[2]) # Sort by expiry date, earliest first
     
     cumulative_months = 0
     for appn, balance, expiry in appn_data:
-        if balance > 0 and remaining_need > 0:
-            months_from_this_appn = min(balance / monthly_personnel_cost, remaining_need / monthly_personnel_cost)
+        if balance > 0 and monthly_personnel_cost > 0:
+            months_from_this_appn = balance / monthly_personnel_cost
+            start_date = report_datetime + timedelta(days=cumulative_months * 30.44)
+            end_date = start_date + timedelta(days=months_from_this_appn * 30.44)
             
-            if months_from_this_appn > 0:
-                amount_to_use = months_from_this_appn * monthly_personnel_cost
-                start_date = report_datetime + timedelta(days=cumulative_months * 30.44)
-                end_date = report_datetime + timedelta(days=(cumulative_months + months_from_this_appn) * 30.44)
-                
-                days_until_expiry = (expiry - report_datetime).days
-                if days_until_expiry < 60:
-                    urgency = "🚨 URGENT"
-                    urgency_color = "#e74c3c"
-                elif days_until_expiry < 120:
-                    urgency = "⚠️ PRIORITY"
-                    urgency_color = "#f39c12"
-                else:
-                    urgency = "✅ PLANNED"
-                    urgency_color = "#27ae60"
-                
-                charging_strategy.append({
-                    'appn': appn, 'amount': amount_to_use, 'months': months_from_this_appn,
-                    'start_date': start_date, 'end_date': end_date, 'expiry_date': expiry,
-                    'urgency': urgency, 'urgency_color': urgency_color,
-                    'remaining_balance': balance - amount_to_use
-                })
-                
-                remaining_need -= amount_to_use
-                cumulative_months += months_from_this_appn
-    
+            days_until_expiry = (expiry - report_datetime).days
+            if days_until_expiry < 60: urgency, urgency_color = "🚨 URGENT", "#e74c3c"
+            elif days_until_expiry < 120: urgency, urgency_color = "⚠️ PRIORITY", "#f39c12"
+            else: urgency, urgency_color = "✅ PLANNED", "#27ae60"
+            
+            charging_strategy.append({
+                'appn': appn, 'amount': balance, 'months': months_from_this_appn,
+                'start_date': start_date, 'end_date': end_date, 'expiry_date': expiry,
+                'urgency': urgency, 'urgency_color': urgency_color
+            })
+            cumulative_months += months_from_this_appn
+
     # Display charging strategy
-    if charging_strategy:
-        st.markdown("### 📅 Month-by-Month Charging Plan")
-        
-        for i, strategy in enumerate(charging_strategy, 1):
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, {strategy["urgency_color"]}aa, {strategy["urgency_color"]}dd); color: white; padding: 1.5rem; border-radius: 15px; margin: 1rem 0;">
-                <h4>Phase {i}: Charge to {strategy["appn"]} {strategy["urgency"]}</h4>
-                <p><strong>📅 Timeframe:</strong> {strategy["start_date"].strftime("%b %d, %Y")} → {strategy["end_date"].strftime("%b %d, %Y")} ({strategy["months"]:.1f} months)</p>
-                <p><strong>💰 Funding:</strong> ${strategy["amount"]:,.0f} | <strong>Remaining:</strong> ${strategy["remaining_balance"]:,.0f}</p>
-                <p><strong>⏰ {strategy["appn"]} Expires:</strong> {strategy["expiry_date"].strftime("%b %d, %Y")} ({(strategy["expiry_date"] - report_datetime).days} days)</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # CURRENT MONTH RECOMMENDATION
     current_month_rec = charging_strategy[0] if charging_strategy else None
     if current_month_rec:
-        st.markdown("### 🎯 THIS MONTH'S CHARGING RECOMMENDATION")
         st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 2rem; border-radius: 15px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 2px solid white;">
-            <h2>💳 CHARGE ALL LABOR TO: {current_month_rec["appn"]}</h2>
-            <h3>{current_month_rec["urgency"]}</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Monthly Target</h4>
-                    <h3>${monthly_personnel_cost:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Use Through</h4>
-                    <h3>{current_month_rec["end_date"].strftime("%b %Y")}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Days Until Expiry</h4>
-                    <h3>{(current_month_rec["expiry_date"] - report_datetime).days}</h3>
-                </div>
-            </div>
+        <div style="background: linear-gradient(135deg, {current_month_rec['urgency_color']}, #333); color: white; padding: 2rem; border-radius: 15px; border: 2px solid white; text-align: center;">
+            <h2>💳 This Month's Recommendation: Charge ALL Labor to {current_month_rec['appn']}</h2>
+            <p style="font-size: 1.2em;">This appropriation expires the soonest. Using it first prevents loss of funds.</p>
+            <p>This will cover costs for approx. <strong>{current_month_rec['months']:.1f} months</strong>, until around <strong>{current_month_rec['end_date'].strftime('%b %d, %Y')}</strong>.</p>
         </div>
         """, unsafe_allow_html=True)
-    
-    # Top 5 Chargeable Objects with expiry highlighting
-    if top_cos:
-        st.markdown("### 🎯 Top 5 Chargeable Objects with Expiry Status")
-        
-        for i, co in enumerate(top_cos):
-            expiry_date = get_appropriation_expiry_date(co['APPN'], fiscal_year)
-            days_to_expiry = (expiry_date - report_datetime).days
-            expiring_soon = is_expiring_soon(report_datetime, expiry_date, 2)
-            
-            urgency = "🚨 URGENT" if expiring_soon else "⚠️ MONITOR" if days_to_expiry < 120 else "✅ STABLE"
-            card_class = "urgent-expiry" if expiring_soon else "status-card"
-            
-            st.markdown(f"""
-            <div class="{card_class}" style="background: linear-gradient(135deg, #3498dbaa, #2980b9aa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                <h4>#{i+1}: {co["CO_Number"]} - {co["APPN"]}</h4>
-                <p><strong>Balance:</strong> ${co["Balance"]:,.0f}</p>
-                <p><strong>Expires:</strong> {expiry_date.strftime("%b %d, %Y")} ({days_to_expiry} days)</p>
-                <p><strong>Status:</strong> {urgency}</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Enhanced Appropriation Cards
-    st.markdown("### 📅 Individual Appropriation Analysis")
-    
-    col1, col2, col3 = st.columns(3)
-    colors = {'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60'}
-    
-    appropriations_data = [
-        ('OMN', omn_balance, omn_l, omn_m, omn_t, omn_expiry, omn_working_days, omn_expiring_soon),
-        ('OPN', opn_balance, opn_l, opn_m, opn_t, opn_expiry, opn_working_days, opn_expiring_soon),
-        ('SCN', scn_balance, scn_l, scn_m, scn_t, scn_expiry, scn_working_days, scn_expiring_soon)
-    ]
-    
-    for i, (appn, balance, l, m, t, expiry, working_days, expiring_soon) in enumerate(appropriations_data):
-        with [col1, col2, col3][i]:
-            card_class = "urgent-expiry" if expiring_soon else "normal-expiry"
-            days_left = (expiry - report_datetime).days
-            
-            # Calculate hours analysis for this appropriation to Dec 30
-            working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
-            hours_needed_to_dec30 = working_days_to_dec30 * 8 * branch_size
-            hours_available_appn = balance / hourly_rate if hourly_rate > 0 else 0
-            hours_excess_appn = hours_available_appn - hours_needed_to_dec30
-            
-            pulse_animation = "animation: pulse 2s infinite;" if expiring_soon else ""
-            
-            st.markdown(f"""
-            <div class="status-card {card_class}" style="background: linear-gradient(135deg, {colors[appn]}aa, {colors[appn]}dd);">
-                <h3>{appn} Appropriation</h3>
-                <p><strong>Expires: {expiry.strftime("%b %d, %Y")}</strong></p>
-                <p>🕒 {days_left} days ({working_days} working days)</p>
-                <h4>${balance:,.0f}</h4>
-                <p>Personnel Months: {balance/monthly_personnel_cost:.1f}</p>
-                <p>L: ${l:,.0f} | M: ${m:,.0f} | T: ${t:,.0f}</p>
-                {"<p style='font-weight: bold; " + pulse_animation + "'>🚨 EXPIRES SOON!</p>" if expiring_soon else ""}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Individual hours analysis box for each appropriation
-            excess_color = "green" if hours_excess_appn >= 0 else "red"
-            excess_text = "Excess" if hours_excess_appn >= 0 else "Deficit"
-            
-            st.markdown(f"""
-            <div style="background: rgba(255,255,255,0.15); border: 2px solid {colors[appn]}; border-radius: 10px; padding: 1rem; margin: 0.5rem 0; color: black;">
-                <h5 style="color: {colors[appn]}; margin: 0 0 0.5rem 0;">📊 {appn} Hours Analysis (to Dec 30)</h5>
-                <div style="display: grid; grid-template-columns: 1fr; gap: 0.3rem; font-size: 0.9em;">
-                    <div><strong>Hours Available:</strong> {hours_available_appn:,.0f}</div>
-                    <div><strong>Hours Needed:</strong> {hours_needed_to_dec30:,}</div>
-                    <div style="color: {excess_color};"><strong>Hours {excess_text}:</strong> {abs(hours_excess_appn):,.0f}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Combined Analysis Box - Total to Dec 30
-    st.markdown("### 🎯 Combined Branch Coverage Analysis (to Dec 30)")
-    
-    # Calculate total combined metrics to Dec 30
-    working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
-    total_hours_needed_dec30 = working_days_to_dec30 * 8 * branch_size
-    total_hours_available_dec30 = total_balance / hourly_rate if hourly_rate > 0 else 0
-    total_hours_excess_dec30 = total_hours_available_dec30 - total_hours_needed_dec30
-    
-    # Calculate coverage percentage
-    coverage_pct_dec30 = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
-    
-    # Determine status color based on coverage
-    if coverage_pct_dec30 >= 100:
-        status_color = "#27ae60"
-        status_text = "✅ FULLY COVERED"
-        status_message = "Branch operations secured through Dec 30"
-    elif coverage_pct_dec30 >= 80:
-        status_color = "#f39c12"
-        status_text = "⚠️ CAUTION"
-        status_message = "Adequate coverage but monitor closely"
-    else:
-        status_color = "#e74c3c"
-        status_text = "🚨 CRITICAL"
-        status_message = "Insufficient funding for full branch operations"
-    
-    # Create the status box
-    excess_deficit_text = "Excess" if total_hours_excess_dec30 >= 0 else "Deficit"
-    excess_color = "lightgreen" if total_hours_excess_dec30 >= 0 else "lightcoral"
-    
-    st.markdown(f"""
-    <div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
-        <h2>🎯 BRANCH OPERATIONS STATUS: {status_text}</h2>
-        <h3>{status_message}</h3>
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0;">
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Total Funding</h4>
-                <h3>${total_balance:,.0f}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours Available</h4>
-                <h3>{total_hours_available_dec30:,.0f}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours Needed</h4>
-                <h3>{total_hours_needed_dec30:,}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours {excess_deficit_text}</h4>
-                <h3 style="color: {excess_color};">{abs(total_hours_excess_dec30):,.0f}</h3>
-            </div>
-        </div>
-        <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
-            <h4>Branch Coverage to Dec 30: {coverage_pct_dec30:.1f}%</h4>
-            <p>Working Days Remaining: {working_days_to_dec30} | Branch Size: {branch_size} people</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Show breakdown by appropriation contribution
-    st.markdown("#### 📊 Funding Contribution Breakdown")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        omn_contribution = (omn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("OMN Contribution", f"{omn_contribution:.1f}%", f"${omn_balance:,.0f}")
-    
-    with col2:
-        opn_contribution = (opn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("OPN Contribution", f"{opn_contribution:.1f}%", f"${opn_balance:,.0f}")
-    
-    with col3:
-        scn_contribution = (scn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("SCN Contribution", f"{scn_contribution:.1f}%", f"${scn_balance:,.0f}")
-    
-    # Strategic recommendations based on combined analysis
-    if total_hours_excess_dec30 < 0:
-        shortfall_amount = abs(total_hours_excess_dec30) * hourly_rate
-        st.error(f"💰 **FUNDING SHORTFALL**: ${shortfall_amount:,.0f} additional funding needed for full branch operations through Dec 30")
-        
-        # Calculate what percentage of branch could be sustained
-        sustainable_percentage = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
-        sustainable_people = int(branch_size * sustainable_percentage / 100)
-        
-        st.warning(f"⚠️ **ALTERNATIVE**: Current funding can sustain {sustainable_people} people ({sustainable_percentage:.1f}% of branch) through Dec 30")
-        
-    elif total_hours_excess_dec30 > 0:
-        excess_amount = total_hours_excess_dec30 * hourly_rate
-        excess_months = total_hours_excess_dec30 / (8 * branch_size * 21.7)  # Average working days per month
-        
-        st.success(f"💡 **FUNDING SURPLUS**: ${excess_amount:,.0f} available for additional scope or {excess_months:.1f} extra months of operations")
-    
-    # Charts
-    st.markdown("### 📈 Financial Visualizations")
-    
+
+    # --- ENHANCED ANALYSIS & VISUALIZATIONS ---
+    st.markdown("### 📈 Financial Analysis & Visualizations")
     col1, col2 = st.columns(2)
-    
-    with col1:
+
+    with col1: # Top Chargeable Objects
+        if top_cos:
+            st.markdown("##### 🎯 Top 5 Chargeable Objects")
+            for i, co in enumerate(top_cos):
+                expiry_date = get_appropriation_expiry_date(co['APPN'], fiscal_year)
+                expiring_soon = is_expiring_soon(report_datetime, expiry_date, 2)
+                card_class = "urgent-expiry" if expiring_soon else ""
+                
+                st.markdown(f"""
+                <div class="status-card {card_class}" style="background: #4a4a4a; margin-bottom: 0.5rem; padding: 0.75rem; text-align: left;">
+                    <strong>#{i+1}: {co["CO_Number"]} ({co["APPN"]})</strong><br>
+                    Balance: ${co["Balance"]:,.0f} | Expires: {expiry_date.strftime("%b %d, %Y")}
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("Upload a VLA file to see the Top 5 Chargeable Objects for the selected BL Code.")
+            
+    with col2: # Funding breakdown charts
+        st.markdown("##### 💰 Funding Composition")
         fig = go.Figure()
         fig.add_trace(go.Bar(name='Labor', x=['OMN', 'OPN', 'SCN'], y=[omn_l, opn_l, scn_l], marker_color='#3498db'))
         fig.add_trace(go.Bar(name='Material', x=['OMN', 'OPN', 'SCN'], y=[omn_m, opn_m, scn_m], marker_color='#e74c3c'))
         fig.add_trace(go.Bar(name='Travel', x=['OMN', 'OPN', 'SCN'], y=[omn_t, opn_t, scn_t], marker_color='#f39c12'))
-        fig.update_layout(title="L/M/T Breakdown", barmode='stack', height=400)
+        fig.update_layout(title="L/M/T Breakdown by Appropriation", barmode='stack', height=300, margin=dict(l=20, r=20, t=40, b=20), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig2 = px.bar(x=['OMN', 'OPN', 'SCN'], y=[omn_balance, opn_balance, scn_balance], 
-                      title="Balance by Appropriation", color=['OMN', 'OPN', 'SCN'], 
-                      color_discrete_map=colors, height=400)
-        fig2.update_layout(showlegend=False)
-        st.plotly_chart(fig2, use_container_width=True)
-    
-    # Personal Funding Analysis Charts (if enabled and data available)
-    if enable_personal_funding and st.session_state.personal_funding_data:
-        st.markdown("### 📊 Personal Funding Portfolio Visualizations")
-        personal_data = st.session_state.personal_funding_data
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Funding Distribution Pie Chart
-            if personal_data['total_available_funding'] > 0:
-                fig_personal_pie = px.pie(
-                    values=[personal_data['bl16200_funding'], personal_data['other_branches_funding']], 
-                    names=['BL16200 (Your Branch)', 'Other Branches'], 
-                    title="Your Funding Distribution (Excluding BL12200)",
-                    color_discrete_map={'BL16200 (Your Branch)': '#3498db', 'Other Branches': '#e67e22'}
-                )
-                st.plotly_chart(fig_personal_pie, use_container_width=True)
-        
-        with col2:
-            # Top Other Branches Funding
-            if personal_data['bl_code_breakdown']:
-                top_other_bl = personal_data['bl_code_breakdown'][:6]
-                bl_names = [bl[0][:15] + "..." if len(bl[0]) > 15 else bl[0] for bl, _ in top_other_bl]
-                bl_balances = [bl_data['balance'] for _, bl_data in top_other_bl]
-                
-                fig_other_branches = px.bar(
-                    x=bl_names, y=bl_balances,
-                    title="Top Other Branches Funding",
-                    color=bl_balances,
-                    color_continuous_scale='oranges'
-                )
-                fig_other_branches.update_layout(showlegend=False, xaxis_tickangle=-45,
-                                               xaxis_title="BL Code", yaxis_title="Balance ($)")
-                st.plotly_chart(fig_other_branches, use_container_width=True)
-        
-        # Additional Personal Portfolio Charts
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            # Appropriation Breakdown Comparison
-            categories = personal_data['categories']
-            appn_comparison = {
-                'Appropriation': ['OMN', 'OPN', 'SCN'],
-                'BL16200': [categories['bl16200']['omn']['balance'], 
-                           categories['bl16200']['opn']['balance'], 
-                           categories['bl16200']['scn']['balance']],
-                'Other Branches': [categories['other_branches']['omn']['balance'], 
-                                  categories['other_branches']['opn']['balance'], 
-                                  categories['other_branches']['scn']['balance']]
-            }
-            
-            fig_appn_comparison = go.Figure()
-            fig_appn_comparison.add_trace(go.Bar(name='BL16200', x=appn_comparison['Appropriation'], 
-                                               y=appn_comparison['BL16200'], marker_color='#3498db'))
-            fig_appn_comparison.add_trace(go.Bar(name='Other Branches', x=appn_comparison['Appropriation'], 
-                                               y=appn_comparison['Other Branches'], marker_color='#e67e22'))
-            fig_appn_comparison.update_layout(title="Appropriation Comparison: Your Branch vs Others", 
-                                            barmode='group', height=400)
-            st.plotly_chart(fig_appn_comparison, use_container_width=True)
-        
-        with col4:
-            # Project Count Comparison
-            project_counts = {
-                'Category': ['BL16200', 'Other Branches'],
-                'Projects': [categories['bl16200']['total_count'], categories['other_branches']['total_count']]
-            }
-            
-            fig_project_count = px.bar(
-                x=project_counts['Category'], y=project_counts['Projects'],
-                title="Project Count: Your Branch vs Others",
-                color=project_counts['Category'],
-                color_discrete_map={'BL16200': '#3498db', 'Other Branches': '#e67e22'}
-            )
-            fig_project_count.update_layout(showlegend=False, yaxis_title="Number of Projects")
-            st.plotly_chart(fig_project_count, use_container_width=True)
 
-    # Benedicks Analysis Charts (if enabled and data available)
-    if enable_pm_analysis and st.session_state.benedicks_data:
-        st.markdown("### 📊 Benedicks Portfolio Visualizations")
-        benedicks_data = st.session_state.benedicks_data
-        benedicks_projects = st.session_state.benedicks_projects
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Benedicks Portfolio by Appropriation
-            summary = benedicks_data['summary']
-            appn_balances = [summary['omn']['balance'], summary['opn']['balance'], summary['scn']['balance'], summary['other']['balance']]
-            appn_names = ['OMN', 'OPN', 'SCN', 'Other']
-            
-            # Filter out zero balances for cleaner pie chart
-            filtered_data = [(name, balance) for name, balance in zip(appn_names, appn_balances) if balance > 0]
-            if filtered_data:
-                names, balances = zip(*filtered_data)
-                fig3 = px.pie(values=balances, names=names, 
-                             title="Benedicks Portfolio by Appropriation",
-                             color_discrete_map={'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60', 'Other': '#9b59b6'})
-                st.plotly_chart(fig3, use_container_width=True)
-        
-        with col2:
-            # Top Benedicks BL Codes
-            if benedicks_data['bl_codes']:
-                top_bl_codes = benedicks_data['bl_codes'][:8]  # Top 8 for readability
-                bl_names = [bl[0][:20] + "..." if len(bl[0]) > 20 else bl[0] for bl, _ in top_bl_codes]  # Truncate long names
-                bl_balances = [bl_data['balance'] for _, bl_data in top_bl_codes]
-                
-                fig4 = px.bar(x=bl_names, y=bl_balances,
-                             title="Top Benedicks BL Codes by Balance",
-                             color=bl_balances,
-                             color_continuous_scale='viridis')
-                fig4.update_layout(showlegend=False, xaxis_tickangle=-45, 
-                                 xaxis_title="BL Code", yaxis_title="Balance ($)")
-                st.plotly_chart(fig4, use_container_width=True)
-        
-        # Additional Benedicks analysis charts
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            # Project count by appropriation
-            appn_counts = [summary['omn']['count'], summary['opn']['count'], summary['scn']['count'], summary['other']['count']]
-            filtered_count_data = [(name, count) for name, count in zip(appn_names, appn_counts) if count > 0]
-            if filtered_count_data:
-                names, counts = zip(*filtered_count_data)
-                fig5 = px.bar(x=names, y=counts,
-                             title="Benedicks Project Count by Appropriation",
-                             color=names,
-                             color_discrete_map={'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60', 'Other': '#9b59b6'})
-                fig5.update_layout(showlegend=False, yaxis_title="Number of Projects")
-                st.plotly_chart(fig5, use_container_width=True)
-        
-        with col4:
-            # L/M/T breakdown for Benedicks portfolio
-            lmt_data = {
-                'Type': ['Labor', 'Material', 'Travel'],
-                'OMN': [summary['omn']['L'], summary['omn']['M'], summary['omn']['T']],
-                'OPN': [summary['opn']['L'], summary['opn']['M'], summary['opn']['T']],
-                'SCN': [summary['scn']['L'], summary['scn']['M'], summary['scn']['T']]
-            }
-            
-            fig6 = go.Figure()
-            fig6.add_trace(go.Bar(name='OMN', x=lmt_data['Type'], y=lmt_data['OMN'], marker_color='#e74c3c'))
-            fig6.add_trace(go.Bar(name='OPN', x=lmt_data['Type'], y=lmt_data['OPN'], marker_color='#f39c12'))
-            fig6.add_trace(go.Bar(name='SCN', x=lmt_data['Type'], y=lmt_data['SCN'], marker_color='#27ae60'))
-            fig6.update_layout(title="Benedicks Portfolio L/M/T Breakdown", barmode='stack', height=400)
-            st.plotly_chart(fig6, use_container_width=True)
-    
-    # Export
+    # PM Portfolio Charts (if enabled)
+    if enable_pm_analysis and st.session_state.pm_portfolio_data:
+        st.markdown("##### 👨‍💼 PM Portfolio Visualizations")
+        pm_data = st.session_state.pm_portfolio_data
+        c1, c2 = st.columns(2)
+        with c1:
+            if pm_data['total_portfolio_balance'] > 0:
+                fig_pm_pie = px.pie(
+                    values=[pm_data['categories']['personal']['total_balance'], pm_data['categories']['other']['total_balance']], 
+                    names=['Your Home Branch', 'Funded to Others'], 
+                    title="PM Funding Distribution",
+                    color_discrete_map={'Your Home Branch':'#3498db', 'Funded to Others':'#e67e22'},
+                    height=300
+                )
+                fig_pm_pie.update_layout(margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig_pm_pie, use_container_width=True)
+        with c2:
+            if pm_data['other_bl_code_breakdown']:
+                top_bl = pm_data['other_bl_code_breakdown'][:6]
+                bl_names = [bl[0] for bl, _ in top_bl]
+                bl_balances = [data['balance'] for _, data in top_bl]
+                fig_pm_bar = px.bar(
+                    x=bl_balances, y=bl_names, orientation='h',
+                    title="Top Branches Funded by You",
+                    color=bl_balances, color_continuous_scale='oranges',
+                    height=300
+                )
+                fig_pm_bar.update_layout(showlegend=False, yaxis_title=None, xaxis_title="Balance ($)", yaxis={'categoryorder':'total ascending'}, margin=dict(l=20, r=20, t=40, b=20))
+                st.plotly_chart(fig_pm_bar, use_container_width=True)
+
+
+    # --- EXPORT SECTION ---
     st.markdown("### 📤 Export Results")
-    
-    export_data = {
-        'Metric': ['Total Balance', 'Monthly Personnel Cost', 'Months to Dec 30', 'OMN Balance', 'OMN Expiry', 'OPN Balance', 'OPN Expiry', 'SCN Balance', 'SCN Expiry'],
-        'Value': [f"${total_balance:,.0f}", f"${monthly_personnel_cost:,.0f}", f"{months_to_dec30:.1f}", 
-                 f"${omn_balance:,.0f}", omn_expiry.strftime('%Y-%m-%d'), f"${opn_balance:,.0f}", 
-                 opn_expiry.strftime('%Y-%m-%d'), f"${scn_balance:,.0f}", scn_expiry.strftime('%Y-%m-%d')]
-    }
-    
+    export_cols = st.columns(4)
+
+    # Export 1: Main Branch Analysis
+    export_data = {'Metric': [], 'Value': []}
+    for appn_name, appn_balance, expiry in [( 'OMN', omn_balance, omn_expiry), ('OPN', opn_balance, opn_expiry), ('SCN', scn_balance, scn_expiry)]:
+        export_data['Metric'].extend([f'{appn_name} Balance', f'{appn_name} Expiry'])
+        export_data['Value'].extend([f"${appn_balance:,.0f}", expiry.strftime('%Y-%m-%d')])
     csv_buffer = io.StringIO()
     pd.DataFrame(export_data).to_csv(csv_buffer, index=False)
+    export_cols[0].download_button("📊 Download Branch Analysis", csv_buffer.getvalue(), f"Branch_Analysis_{selected_bl}.csv", mime="text/csv", use_container_width=True)
     
-    # Export Personal Funding data if available
-    personal_funding_export_available = False
-    if enable_personal_funding and st.session_state.personal_funding_data:
-        personal_data = st.session_state.personal_funding_data
-        personal_export_data = []
-        
-        for project in personal_data['all_projects']:
-            personal_export_data.append({
-                'PM': project['PM'],
-                'APPN': project['APPN'],
-                'Type': project['Type'],
-                'Balance': project['Balance'],
-                'BL_Code': project['BL_Code'],
-                'Category': project['Category'],
-                'Description': project['Description']
-            })
-        
-        personal_csv_buffer = io.StringIO()
-        pd.DataFrame(personal_export_data).to_csv(personal_csv_buffer, index=False)
-        personal_funding_export_available = True
+    # Export 2: Charging Strategy
+    strategy_export = []
+    for i, s in enumerate(charging_strategy, 1):
+        strategy_export.append({ 'Phase': i, 'APPN': s['appn'], 'Amount': s['amount'], 'Covers (Months)': f"{s['months']:.1f}", 'Est_End_Date': s['end_date'].strftime('%Y-%m-%d'), 'Expiry_Date': s['expiry_date'].strftime('%Y-%m-%d')})
+    strategy_csv_buffer = io.StringIO()
+    pd.DataFrame(strategy_export).to_csv(strategy_csv_buffer, index=False)
+    export_cols[1].download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(), f"Charging_Strategy_{selected_bl}.csv", mime="text/csv", use_container_width=True)
 
-    # Export Benedicks data if available
-    benedicks_export_available = False
-    if enable_pm_analysis and st.session_state.benedicks_projects:
-        benedicks_projects = st.session_state.benedicks_projects
-        benedicks_export_data = []
-        for project in benedicks_projects:
-            benedicks_export_data.append({
-                'PM': project['PM'],
-                'APPN': project['APPN'],
-                'Type': project['Type'],
-                'Balance': project['Balance'],
-                'BL_Code': project['BL_Code'],
-                'Description': project['Description']
-            })
-        
-        benedicks_csv_buffer = io.StringIO()
-        pd.DataFrame(benedicks_export_data).to_csv(benedicks_csv_buffer, index=False)
-        benedicks_export_available = True
-    
-    if charging_strategy:
-        strategy_export = []
-        for i, strategy in enumerate(charging_strategy, 1):
-            strategy_export.append({
-                'Phase': i, 'APPN': strategy['appn'], 'Start_Date': strategy['start_date'].strftime('%Y-%m-%d'),
-                'End_Date': strategy['end_date'].strftime('%Y-%m-%d'), 'Amount': strategy['amount'],
-                'Expiry_Date': strategy['expiry_date'].strftime('%Y-%m-%d'), 'Urgency': strategy['urgency']
-            })
-        
-        strategy_csv_buffer = io.StringIO()
-        pd.DataFrame(strategy_export).to_csv(strategy_csv_buffer, index=False)
-        
-        if benedicts_export_available and personal_funding_export_available:
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col4:
-                st.download_button("💼 Download Personal Funding", personal_csv_buffer.getvalue(),
-                                 f"Personal_Funding_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        elif benedicks_export_available:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        elif personal_funding_export_available:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("💼 Download Personal Funding", personal_csv_buffer.getvalue(),
-                                 f"Personal_Funding_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-    else:
-        if benedicks_export_available and personal_funding_export_available:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("💼 Download Personal Funding", personal_csv_buffer.getvalue(),
-                                 f"Personal_Funding_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        elif benedicks_export_available:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        elif personal_funding_export_available:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("💼 Download Personal Funding", personal_csv_buffer.getvalue(),
-                                 f"Personal_Funding_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                             f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
+    # Export 3: PM Portfolio Projects
+    if enable_pm_analysis and st.session_state.pm_projects:
+        pm_projects_df = pd.DataFrame(st.session_state.pm_projects)
+        pm_csv_buffer = io.StringIO()
+        pm_projects_df.to_csv(pm_csv_buffer, index=False)
+        export_cols[2].download_button("👨‍💼 Download PM Portfolio", pm_csv_buffer.getvalue(), f"PM_Portfolio_{pm_name_filter}.csv", mime="text/csv", use_container_width=True)
 
-# Footer
+# --- Footer ---
 st.markdown("---")
-st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging, Expiry Analysis, Benedicks Portfolio & Personal Funding Analysis</p></div>', unsafe_allow_html=True) Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-    else:
-        if benedicks_export_available:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                             f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-
-# Footer
-st.markdown("---")
-st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging, Expiry Analysis & Benedicks Portfolio Analysis</p></div>', unsafe_allow_html=True), '').replace(',', '').strip()
-                    balance = float(balance_str) if balance_str and balance_str != 'nan' else 0.0
-                    
-                    # Track individual projects
-                    project_info = {
-                        'PM': pm_name,
-                        'APPN': appn,
-                        'Type': type_code,
-                        'Balance': balance,
-                        'BL_Code': bl_code,
-                        'Description': project_desc,
-                        'Category': category_info['name']
-                    }
-                    
-                    result[category_key]['projects'].append(project_info)
-                    all_projects.append(project_info)
-                    
-                    # Track BL code breakdown for other branches
-                    if category_key == 'other_branches' and bl_code not in bl_code_breakdown:
-                        bl_code_breakdown[bl_code] = {'balance': 0.0, 'count': 0, 'projects': []}
-                    
-                    if category_key == 'other_branches':
-                        bl_code_breakdown[bl_code]['balance'] += balance
-                        bl_code_breakdown[bl_code]['count'] += 1
-                        bl_code_breakdown[bl_code]['projects'].append(project_info)
-                    
-                except:
-                    balance = 0.0
-                    continue
-                
-                # Determine appropriation category
-                if 'OMN' in appn:
-                    appn_key = 'omn'
-                elif 'SCN' in appn:
-                    appn_key = 'scn'
-                elif 'OPN' in appn:
-                    appn_key = 'opn'
-                else:
-                    appn_key = 'other'
-                
-                result[category_key][appn_key]['balance'] += balance
-                result[category_key][appn_key]['count'] += 1
-                result[category_key]['total_balance'] += balance
-                result[category_key]['total_count'] += 1
-                
-                # Distribute by type
-                if type_code == 'L':
-                    result[category_key][appn_key]['L'] += balance
-                elif type_code == 'M':
-                    result[category_key][appn_key]['M'] += balance
-                elif type_code == 'T':
-                    result[category_key][appn_key]['T'] += balance
-                else:
-                    # If type is unclear, distribute proportionally
-                    result[category_key][appn_key]['L'] += balance * 0.6
-                    result[category_key][appn_key]['M'] += balance * 0.3
-                    result[category_key][appn_key]['T'] += balance * 0.1
-            
-            # Sort projects by balance for each category
-            result[category_key]['projects'] = sorted(result[category_key]['projects'], key=lambda x: x['Balance'], reverse=True)
-        
-        # Sort all projects by balance
-        all_projects = sorted(all_projects, key=lambda x: x['Balance'], reverse=True)
-        
-        # Sort BL code breakdown for other branches
-        sorted_bl_codes = sorted(bl_code_breakdown.items(), key=lambda x: x[1]['balance'], reverse=True)
-        
-        # Calculate totals (excluding BL12200)
-        total_available_funding = result['bl16200']['total_balance'] + result['other_branches']['total_balance']
-        total_projects = result['bl16200']['total_count'] + result['other_branches']['total_count']
-        
-        return {
-            'categories': result,
-            'all_projects': all_projects,
-            'bl_code_breakdown': sorted_bl_codes,
-            'total_available_funding': total_available_funding,
-            'total_projects': total_projects,
-            'bl16200_funding': result['bl16200']['total_balance'],
-            'other_branches_funding': result['other_branches']['total_balance'],
-            'bl12200_funding': result['bl12200']['total_balance']
-        }, f"✅ Found {total_projects} projects under your PM (excluding BL12200) worth ${total_available_funding:,.0f}", all_projects
-        
-    except Exception as e:
-        return None, f"❌ Error analyzing personal funding portfolio: {str(e)}", []
-    """
-    Analyze all Benedicks entries that are NOT BL12200
-    """
-    try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
-        
-        # Filter for Benedicks entries (PM column is index 3)
-        benedicks_mask = df.iloc[:, 3].astype(str).str.lower().str.contains('benedick', na=False)
-        benedicks_data = df[benedicks_mask]
-        
-        if benedicks_data.empty:
-            return None, "No Benedicks entries found", []
-        
-        # Exclude BL12200 entries (Billing Element column is index 7)
-        non_bl12200_mask = ~benedicks_data.iloc[:, 7].astype(str).str.contains('BL12200', na=False)
-        filtered_data = benedicks_data[non_bl12200_mask]
-        
-        if filtered_data.empty:
-            return None, "All Benedicks entries are BL12200", []
-        
-        # Analyze the data structure
-        result = {
-            'omn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-            'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-            'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0},
-            'other': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0}
-        }
-        
-        benedicks_projects = []
-        bl_code_summary = {}
-        
-        for _, row in filtered_data.iterrows():
-            appn = str(row.iloc[2]).upper() if len(df.columns) > 2 else "Unknown"
-            type_code = str(row.iloc[1]).upper().strip() if len(df.columns) > 1 else "Unknown"
-            pm_name = str(row.iloc[3]) if len(df.columns) > 3 else "Unknown"
-            bl_code = str(row.iloc[7]) if len(df.columns) > 7 else "Unknown"
-            project_desc = str(row.iloc[5]) if len(df.columns) > 5 else "Unknown"
-            
-            try:
-                balance_str = str(row.iloc[16]).replace('$', '').replace(',', '').strip()
-                balance = float(balance_str) if balance_str and balance_str != 'nan' else 0.0
-                
-                # Track individual projects
-                benedicks_projects.append({
-                    'PM': pm_name,
-                    'APPN': appn,
-                    'Type': type_code,
-                    'Balance': balance,
-                    'BL_Code': bl_code,
-                    'Description': project_desc
-                })
-                
-                # Track BL code summaries
-                if bl_code not in bl_code_summary:
-                    bl_code_summary[bl_code] = {'balance': 0.0, 'count': 0, 'types': {}}
-                bl_code_summary[bl_code]['balance'] += balance
-                bl_code_summary[bl_code]['count'] += 1
-                
-                if type_code not in bl_code_summary[bl_code]['types']:
-                    bl_code_summary[bl_code]['types'][type_code] = {'balance': 0.0, 'count': 0}
-                bl_code_summary[bl_code]['types'][type_code]['balance'] += balance
-                bl_code_summary[bl_code]['types'][type_code]['count'] += 1
-                
-            except:
-                balance = 0.0
-                continue
-            
-            # Determine appropriation category
-            if 'OMN' in appn:
-                appn_key = 'omn'
-            elif 'SCN' in appn:
-                appn_key = 'scn'
-            elif 'OPN' in appn:
-                appn_key = 'opn'
-            else:
-                appn_key = 'other'
-            
-            result[appn_key]['balance'] += balance
-            result[appn_key]['count'] += 1
-            
-            # Distribute by type
-            if type_code == 'L':
-                result[appn_key]['L'] += balance
-            elif type_code == 'M':
-                result[appn_key]['M'] += balance
-            elif type_code == 'T':
-                result[appn_key]['T'] += balance
-            else:
-                # If type is unclear, distribute proportionally
-                result[appn_key]['L'] += balance * 0.6
-                result[appn_key]['M'] += balance * 0.3
-                result[appn_key]['T'] += balance * 0.1
-        
-        # Sort projects by balance
-        benedicks_projects = sorted(benedicks_projects, key=lambda x: x['Balance'], reverse=True)
-        
-        # Sort BL codes by balance
-        top_bl_codes = sorted(bl_code_summary.items(), key=lambda x: x[1]['balance'], reverse=True)[:10]
-        
-        total_balance = sum([result[key]['balance'] for key in result.keys()])
-        total_count = len(benedicks_projects)
-        
-        return {
-            'summary': result,
-            'projects': benedicks_projects,
-            'bl_codes': top_bl_codes,
-            'total_balance': total_balance,
-            'total_count': total_count
-        }, f"✅ Found {total_count} Benedicks projects (non-BL12200) worth ${total_balance:,.0f}", benedicks_projects
-        
-    except Exception as e:
-        return None, f"❌ Error analyzing Benedicks portfolio: {str(e)}", []
-
-def extract_vla_data(file, target_bl):
-    try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
-        bl_data = df[df.iloc[:, 8].astype(str).str.contains(target_bl, na=False)]
-        
-        if bl_data.empty:
-            return None, f"No data found for {target_bl}", []
-        
-        result = {'omn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
-                 'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0},
-                 'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0}}
-        
-        chargeable_objects = []
-        
-        for _, row in bl_data.iterrows():
-            appn = str(row.iloc[2]).upper()
-            type_code = str(row.iloc[1]).upper().strip()
-            co_number = str(row.iloc[3]) if len(df.columns) > 3 else "Unknown"
-            
-            try:
-                balance = float(str(row.iloc[16]).replace('$', '').replace(',', '').strip() or 0)
-                
-                if balance > 0:
-                    chargeable_objects.append({'CO_Number': co_number, 'APPN': appn, 'Type': type_code, 'Balance': balance})
-            except:
-                continue
-            
-            appn_key = 'omn' if 'OMN' in appn else 'scn' if 'SCN' in appn else 'opn'
-            result[appn_key]['balance'] += balance
-            
-            if type_code == 'L': result[appn_key]['L'] += balance
-            elif type_code == 'M': result[appn_key]['M'] += balance
-            elif type_code == 'T': result[appn_key]['T'] += balance
-            else:
-                result[appn_key]['L'] += balance * 0.6
-                result[appn_key]['M'] += balance * 0.3
-                result[appn_key]['T'] += balance * 0.1
-        
-        top_cos = sorted(chargeable_objects, key=lambda x: x['Balance'], reverse=True)[:5]
-        return result, f"✅ Extracted data for {target_bl}", top_cos
-    except Exception as e:
-        return None, f"❌ Error: {str(e)}", []
-
-# Initialize session state
-if 'extracted_data' not in st.session_state:
-    st.session_state.extracted_data = None
-if 'last_bl_code' not in st.session_state:
-    st.session_state.last_bl_code = None
-if 'top_cos' not in st.session_state:
-    st.session_state.top_cos = []
-if 'benedicks_data' not in st.session_state:
-    st.session_state.benedicks_data = None
-if 'benedicks_projects' not in st.session_state:
-    st.session_state.benedicks_projects = []
-
-# Benedicks Portfolio Analysis Section (if enabled and file uploaded)
-if enable_pm_analysis and uploaded_file:
-    st.markdown("### 👨‍💼 Benedicks Portfolio Analysis (Non-BL12200)")
-    
-    # Analyze Benedicks portfolio data
-    benedicks_analysis, benedicks_message, benedicks_projects = analyze_benedicks_portfolio(uploaded_file)
-    st.session_state.benedicks_data = benedicks_analysis
-    st.session_state.benedicks_projects = benedicks_projects
-    
-    if benedicks_analysis:
-        st.success(benedicks_message)
-        
-        # Display comprehensive summary
-        total_balance = benedicks_analysis['total_balance']
-        total_count = benedicks_analysis['total_count']
-        summary = benedicks_analysis['summary']
-        
-        # Main Benedicks Portfolio Card
-        st.markdown(f"""
-        <div class="pm-analysis-card">
-            <h3>🎯 Benedicks Portfolio Analysis (Excluding BL12200)</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Projects</h4>
-                    <h3>{total_count}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Portfolio Value</h4>
-                    <h3>${total_balance:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Avg Project Size</h4>
-                    <h3>${total_balance/total_count:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Personnel Months</h4>
-                    <h3>{total_balance/(hourly_rate * hours_per_week * 4.3 * (1 + overhead_rate / 100)):,.1f}</h3>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Appropriation breakdown for Benedicks portfolio
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['omn']['count']}")
-            st.write(f"**Balance:** ${summary['omn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['omn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['omn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['omn']['T']:,.0f}")
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['opn']['count']}")
-            st.write(f"**Balance:** ${summary['opn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['opn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['opn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['opn']['T']:,.0f}")
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['scn']['count']}")
-            st.write(f"**Balance:** ${summary['scn']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['scn']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['scn']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['scn']['T']:,.0f}")
-        
-        with col4:
-            st.markdown('<div class="metric-card"><h4>Other - Benedicks</h4></div>', unsafe_allow_html=True)
-            st.write(f"**Projects:** {summary['other']['count']}")
-            st.write(f"**Balance:** ${summary['other']['balance']:,.0f}")
-            st.write(f"**Labor:** ${summary['other']['L']:,.0f}")
-            st.write(f"**Material:** ${summary['other']['M']:,.0f}")
-            st.write(f"**Travel:** ${summary['other']['T']:,.0f}")
-        
-        # Top BL Codes Analysis
-        if benedicks_analysis['bl_codes']:
-            st.markdown("#### 🏗️ Top BL Codes in Benedicks Portfolio")
-            for i, (bl_code, bl_data) in enumerate(benedicks_analysis['bl_codes'][:5]):
-                type_breakdown = ""
-                for type_code, type_data in bl_data['types'].items():
-                    if type_code.strip():
-                        type_breakdown += f'<span style="background: rgba(255,255,255,0.2); padding: 0.3rem 0.6rem; border-radius: 5px; font-size: 0.9em; margin-right: 0.5rem;">{type_code}: ${type_data["balance"]:,.0f}</span>'
-                
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #2c3e50aa, #34495eaa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {bl_code}</h5>
-                    <p><strong>Projects:</strong> {bl_data["count"]} | <strong>Total Balance:</strong> ${bl_data["balance"]:,.0f}</p>
-                    <div style="display: flex; gap: 1rem; flex-wrap: wrap;">{type_breakdown}</div>
-                </div>
-                """, unsafe_allow_html=True)
-        
-        # Top Individual Projects
-        if benedicks_projects:
-            st.markdown("#### 🎯 Top Benedicks Projects")
-            for i, project in enumerate(benedicks_projects[:10]):
-                description = project["Description"][:100] + "..." if len(project["Description"]) > 100 else project["Description"]
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #8e44adaa, #9b59b6aa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {project["BL_Code"]}</h5>
-                    <p><strong>PM:</strong> {project["PM"]} | <strong>APPN:</strong> {project["APPN"]} | <strong>Type:</strong> {project["Type"]}</p>
-                    <p><strong>Balance:</strong> ${project["Balance"]:,.0f}</p>
-                    <p><strong>Description:</strong> {description}</p>
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        st.warning(benedicks_message)
-
-# Data Input Section - Auto-extract when BL code changes
-if uploaded_file:
-    if st.session_state.last_bl_code != selected_bl:
-        extracted_data, message, top_cos = extract_vla_data(uploaded_file, selected_bl)
-        st.session_state.extracted_data = extracted_data
-        st.session_state.top_cos = top_cos
-        st.session_state.last_bl_code = selected_bl
-        st.info(message)
-    else:
-        extracted_data = st.session_state.extracted_data
-        top_cos = st.session_state.top_cos
-    
-    if extracted_data:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-            omn_balance = st.number_input("OMN Balance ($)", value=float(extracted_data['omn']['balance']))
-            omn_l = st.number_input("OMN Labor ($)", value=float(extracted_data['omn']['L']))
-            omn_m = st.number_input("OMN Material ($)", value=float(extracted_data['omn']['M']))
-            omn_t = st.number_input("OMN Travel ($)", value=float(extracted_data['omn']['T']))
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-            opn_balance = st.number_input("OPN Balance ($)", value=float(extracted_data['opn']['balance']))
-            opn_l = st.number_input("OPN Labor ($)", value=float(extracted_data['opn']['L']))
-            opn_m = st.number_input("OPN Material ($)", value=float(extracted_data['opn']['M']))
-            opn_t = st.number_input("OPN Travel ($)", value=float(extracted_data['opn']['T']))
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-            scn_balance = st.number_input("SCN Balance ($)", value=float(extracted_data['scn']['balance']))
-            scn_l = st.number_input("SCN Labor ($)", value=float(extracted_data['scn']['L']))
-            scn_m = st.number_input("SCN Material ($)", value=float(extracted_data['scn']['M']))
-            scn_t = st.number_input("SCN Travel ($)", value=float(extracted_data['scn']['T']))
-    else:
-        top_cos = []
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-            omn_balance = st.number_input("OMN Balance ($)", value=44053.0)
-            omn_l = st.number_input("OMN Labor ($)", value=44053.0)
-            omn_m = st.number_input("OMN Material ($)", value=0.0)
-            omn_t = st.number_input("OMN Travel ($)", value=0.0)
-        
-        with col2:
-            st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-            opn_balance = st.number_input("OPN Balance ($)", value=1947299.0)
-            opn_l = st.number_input("OPN Labor ($)", value=1947299.0)
-            opn_m = st.number_input("OPN Material ($)", value=0.0)
-            opn_t = st.number_input("OPN Travel ($)", value=0.0)
-        
-        with col3:
-            st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-            scn_balance = st.number_input("SCN Balance ($)", value=1148438.0)
-            scn_l = st.number_input("SCN Labor ($)", value=813595.0)
-            scn_m = st.number_input("SCN Material ($)", value=334843.0)
-            scn_t = st.number_input("SCN Travel ($)", value=0.0)
-else:
-    top_cos = []
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-        omn_balance = st.number_input("OMN Balance ($)", value=44053.0)
-        omn_l = st.number_input("OMN Labor ($)", value=44053.0)
-        omn_m = st.number_input("OMN Material ($)", value=0.0)
-        omn_t = st.number_input("OMN Travel ($)", value=0.0)
-    
-    with col2:
-        st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-        opn_balance = st.number_input("OPN Balance ($)", value=1947299.0)
-        opn_l = st.number_input("OPN Labor ($)", value=1947299.0)
-        opn_m = st.number_input("OPN Material ($)", value=0.0)
-        opn_t = st.number_input("OPN Travel ($)", value=0.0)
-    
-    with col3:
-        st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-        scn_balance = st.number_input("SCN Balance ($)", value=1148438.0)
-        scn_l = st.number_input("SCN Labor ($)", value=813595.0)
-        scn_m = st.number_input("SCN Material ($)", value=334843.0)
-        scn_t = st.number_input("SCN Travel ($)", value=0.0)
-
-# Calculate Button
-if st.button("🚀 Calculate Analysis", type="primary"):
-    
-    # Core Calculations
-    report_datetime = datetime.combine(report_date, datetime.min.time())
-    
-    # Calculate expiry dates
-    omn_expiry = get_appropriation_expiry_date('OMN', fiscal_year)
-    opn_expiry = get_appropriation_expiry_date('OPN', fiscal_year)
-    scn_expiry = get_appropriation_expiry_date('SCN', fiscal_year)
-    
-    # Calculate working days to each expiry
-    omn_working_days = count_working_days(report_datetime, omn_expiry, fiscal_year)
-    opn_working_days = count_working_days(report_datetime, opn_expiry, fiscal_year)
-    scn_working_days = count_working_days(report_datetime, scn_expiry, fiscal_year)
-    
-    # Check expiring soon
-    omn_expiring_soon = is_expiring_soon(report_datetime, omn_expiry, 2)
-    opn_expiring_soon = is_expiring_soon(report_datetime, opn_expiry, 2)
-    scn_expiring_soon = is_expiring_soon(report_datetime, scn_expiry, 2)
-    
-    # Personnel calculations
-    monthly_personnel_cost = hourly_rate * hours_per_week * 4.3 * branch_size * (1 + overhead_rate / 100)
-    total_balance = omn_balance + opn_balance + scn_balance
-    
-    # URGENT ALERTS
-    urgent_appropriations = []
-    if omn_expiring_soon and omn_balance > 0:
-        urgent_appropriations.append(f"OMN (expires {omn_expiry.strftime('%b %d, %Y')} - {(omn_expiry - report_datetime).days} days)")
-    if opn_expiring_soon and opn_balance > 0:
-        urgent_appropriations.append(f"OPN (expires {opn_expiry.strftime('%b %d, %Y')} - {(opn_expiry - report_datetime).days} days)")
-    if scn_expiring_soon and scn_balance > 0:
-        urgent_appropriations.append(f"SCN (expires {scn_expiry.strftime('%b %d, %Y')} - {(scn_expiry - report_datetime).days} days)")
-    
-    if urgent_appropriations:
-        st.error(f"🚨 **URGENT EXPIRY ALERT**: {', '.join(urgent_appropriations)}")
-    
-    # SMART APPN CHARGING STRATEGY
-    st.markdown('<div class="bubble"><h3 style="text-align: center;">💡 Smart APPN Charging Strategy</h3><p style="text-align: center;">Use all funding before Dec 30 while maintaining operations</p></div>', unsafe_allow_html=True)
-    
-    # Calculate Dec 30 strategy
-    dec_30_date = datetime(fiscal_year, 12, 30)
-    months_to_dec30 = max((dec_30_date - report_datetime).days / 30.44, 0)
-    total_funding_needed_dec30 = monthly_personnel_cost * months_to_dec30
-    
-    # Create optimal charging strategy
-    charging_strategy = []
-    remaining_need = total_funding_needed_dec30
-    
-    # Sort by expiry date (use earliest first)
-    appn_data = [("OMN", omn_balance, omn_expiry), ("OPN", opn_balance, opn_expiry), ("SCN", scn_balance, scn_expiry)]
-    appn_data.sort(key=lambda x: x[2])
-    
-    cumulative_months = 0
-    for appn, balance, expiry in appn_data:
-        if balance > 0 and remaining_need > 0:
-            months_from_this_appn = min(balance / monthly_personnel_cost, remaining_need / monthly_personnel_cost)
-            
-            if months_from_this_appn > 0:
-                amount_to_use = months_from_this_appn * monthly_personnel_cost
-                start_date = report_datetime + timedelta(days=cumulative_months * 30.44)
-                end_date = report_datetime + timedelta(days=(cumulative_months + months_from_this_appn) * 30.44)
-                
-                days_until_expiry = (expiry - report_datetime).days
-                if days_until_expiry < 60:
-                    urgency = "🚨 URGENT"
-                    urgency_color = "#e74c3c"
-                elif days_until_expiry < 120:
-                    urgency = "⚠️ PRIORITY"
-                    urgency_color = "#f39c12"
-                else:
-                    urgency = "✅ PLANNED"
-                    urgency_color = "#27ae60"
-                
-                charging_strategy.append({
-                    'appn': appn, 'amount': amount_to_use, 'months': months_from_this_appn,
-                    'start_date': start_date, 'end_date': end_date, 'expiry_date': expiry,
-                    'urgency': urgency, 'urgency_color': urgency_color,
-                    'remaining_balance': balance - amount_to_use
-                })
-                
-                remaining_need -= amount_to_use
-                cumulative_months += months_from_this_appn
-    
-    # Display charging strategy
-    if charging_strategy:
-        st.markdown("### 📅 Month-by-Month Charging Plan")
-        
-        for i, strategy in enumerate(charging_strategy, 1):
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, {strategy["urgency_color"]}aa, {strategy["urgency_color"]}dd); color: white; padding: 1.5rem; border-radius: 15px; margin: 1rem 0;">
-                <h4>Phase {i}: Charge to {strategy["appn"]} {strategy["urgency"]}</h4>
-                <p><strong>📅 Timeframe:</strong> {strategy["start_date"].strftime("%b %d, %Y")} → {strategy["end_date"].strftime("%b %d, %Y")} ({strategy["months"]:.1f} months)</p>
-                <p><strong>💰 Funding:</strong> ${strategy["amount"]:,.0f} | <strong>Remaining:</strong> ${strategy["remaining_balance"]:,.0f}</p>
-                <p><strong>⏰ {strategy["appn"]} Expires:</strong> {strategy["expiry_date"].strftime("%b %d, %Y")} ({(strategy["expiry_date"] - report_datetime).days} days)</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # CURRENT MONTH RECOMMENDATION
-    current_month_rec = charging_strategy[0] if charging_strategy else None
-    if current_month_rec:
-        st.markdown("### 🎯 THIS MONTH'S CHARGING RECOMMENDATION")
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 2rem; border-radius: 15px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); border: 2px solid white;">
-            <h2>💳 CHARGE ALL LABOR TO: {current_month_rec["appn"]}</h2>
-            <h3>{current_month_rec["urgency"]}</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Monthly Target</h4>
-                    <h3>${monthly_personnel_cost:,.0f}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Use Through</h4>
-                    <h3>{current_month_rec["end_date"].strftime("%b %Y")}</h3>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Days Until Expiry</h4>
-                    <h3>{(current_month_rec["expiry_date"] - report_datetime).days}</h3>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Top 5 Chargeable Objects with expiry highlighting
-    if top_cos:
-        st.markdown("### 🎯 Top 5 Chargeable Objects with Expiry Status")
-        
-        for i, co in enumerate(top_cos):
-            expiry_date = get_appropriation_expiry_date(co['APPN'], fiscal_year)
-            days_to_expiry = (expiry_date - report_datetime).days
-            expiring_soon = is_expiring_soon(report_datetime, expiry_date, 2)
-            
-            urgency = "🚨 URGENT" if expiring_soon else "⚠️ MONITOR" if days_to_expiry < 120 else "✅ STABLE"
-            card_class = "urgent-expiry" if expiring_soon else "status-card"
-            
-            st.markdown(f"""
-            <div class="{card_class}" style="background: linear-gradient(135deg, #3498dbaa, #2980b9aa); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                <h4>#{i+1}: {co["CO_Number"]} - {co["APPN"]}</h4>
-                <p><strong>Balance:</strong> ${co["Balance"]:,.0f}</p>
-                <p><strong>Expires:</strong> {expiry_date.strftime("%b %d, %Y")} ({days_to_expiry} days)</p>
-                <p><strong>Status:</strong> {urgency}</p>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Enhanced Appropriation Cards
-    st.markdown("### 📅 Individual Appropriation Analysis")
-    
-    col1, col2, col3 = st.columns(3)
-    colors = {'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60'}
-    
-    appropriations_data = [
-        ('OMN', omn_balance, omn_l, omn_m, omn_t, omn_expiry, omn_working_days, omn_expiring_soon),
-        ('OPN', opn_balance, opn_l, opn_m, opn_t, opn_expiry, opn_working_days, opn_expiring_soon),
-        ('SCN', scn_balance, scn_l, scn_m, scn_t, scn_expiry, scn_working_days, scn_expiring_soon)
-    ]
-    
-    for i, (appn, balance, l, m, t, expiry, working_days, expiring_soon) in enumerate(appropriations_data):
-        with [col1, col2, col3][i]:
-            card_class = "urgent-expiry" if expiring_soon else "normal-expiry"
-            days_left = (expiry - report_datetime).days
-            
-            # Calculate hours analysis for this appropriation to Dec 30
-            working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
-            hours_needed_to_dec30 = working_days_to_dec30 * 8 * branch_size
-            hours_available_appn = balance / hourly_rate if hourly_rate > 0 else 0
-            hours_excess_appn = hours_available_appn - hours_needed_to_dec30
-            
-            pulse_animation = "animation: pulse 2s infinite;" if expiring_soon else ""
-            
-            st.markdown(f"""
-            <div class="status-card {card_class}" style="background: linear-gradient(135deg, {colors[appn]}aa, {colors[appn]}dd);">
-                <h3>{appn} Appropriation</h3>
-                <p><strong>Expires: {expiry.strftime("%b %d, %Y")}</strong></p>
-                <p>🕒 {days_left} days ({working_days} working days)</p>
-                <h4>${balance:,.0f}</h4>
-                <p>Personnel Months: {balance/monthly_personnel_cost:.1f}</p>
-                <p>L: ${l:,.0f} | M: ${m:,.0f} | T: ${t:,.0f}</p>
-                {"<p style='font-weight: bold; " + pulse_animation + "'>🚨 EXPIRES SOON!</p>" if expiring_soon else ""}
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Individual hours analysis box for each appropriation
-            excess_color = "green" if hours_excess_appn >= 0 else "red"
-            excess_text = "Excess" if hours_excess_appn >= 0 else "Deficit"
-            
-            st.markdown(f"""
-            <div style="background: rgba(255,255,255,0.15); border: 2px solid {colors[appn]}; border-radius: 10px; padding: 1rem; margin: 0.5rem 0; color: black;">
-                <h5 style="color: {colors[appn]}; margin: 0 0 0.5rem 0;">📊 {appn} Hours Analysis (to Dec 30)</h5>
-                <div style="display: grid; grid-template-columns: 1fr; gap: 0.3rem; font-size: 0.9em;">
-                    <div><strong>Hours Available:</strong> {hours_available_appn:,.0f}</div>
-                    <div><strong>Hours Needed:</strong> {hours_needed_to_dec30:,}</div>
-                    <div style="color: {excess_color};"><strong>Hours {excess_text}:</strong> {abs(hours_excess_appn):,.0f}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Combined Analysis Box - Total to Dec 30
-    st.markdown("### 🎯 Combined Branch Coverage Analysis (to Dec 30)")
-    
-    # Calculate total combined metrics to Dec 30
-    working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
-    total_hours_needed_dec30 = working_days_to_dec30 * 8 * branch_size
-    total_hours_available_dec30 = total_balance / hourly_rate if hourly_rate > 0 else 0
-    total_hours_excess_dec30 = total_hours_available_dec30 - total_hours_needed_dec30
-    
-    # Calculate coverage percentage
-    coverage_pct_dec30 = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
-    
-    # Determine status color based on coverage
-    if coverage_pct_dec30 >= 100:
-        status_color = "#27ae60"
-        status_text = "✅ FULLY COVERED"
-        status_message = "Branch operations secured through Dec 30"
-    elif coverage_pct_dec30 >= 80:
-        status_color = "#f39c12"
-        status_text = "⚠️ CAUTION"
-        status_message = "Adequate coverage but monitor closely"
-    else:
-        status_color = "#e74c3c"
-        status_text = "🚨 CRITICAL"
-        status_message = "Insufficient funding for full branch operations"
-    
-    # Create the status box
-    excess_deficit_text = "Excess" if total_hours_excess_dec30 >= 0 else "Deficit"
-    excess_color = "lightgreen" if total_hours_excess_dec30 >= 0 else "lightcoral"
-    
-    st.markdown(f"""
-    <div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
-        <h2>🎯 BRANCH OPERATIONS STATUS: {status_text}</h2>
-        <h3>{status_message}</h3>
-        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0;">
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Total Funding</h4>
-                <h3>${total_balance:,.0f}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours Available</h4>
-                <h3>{total_hours_available_dec30:,.0f}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours Needed</h4>
-                <h3>{total_hours_needed_dec30:,}</h3>
-            </div>
-            <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                <h4>Hours {excess_deficit_text}</h4>
-                <h3 style="color: {excess_color};">{abs(total_hours_excess_dec30):,.0f}</h3>
-            </div>
-        </div>
-        <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px; margin: 1rem 0;">
-            <h4>Branch Coverage to Dec 30: {coverage_pct_dec30:.1f}%</h4>
-            <p>Working Days Remaining: {working_days_to_dec30} | Branch Size: {branch_size} people</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Show breakdown by appropriation contribution
-    st.markdown("#### 📊 Funding Contribution Breakdown")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        omn_contribution = (omn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("OMN Contribution", f"{omn_contribution:.1f}%", f"${omn_balance:,.0f}")
-    
-    with col2:
-        opn_contribution = (opn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("OPN Contribution", f"{opn_contribution:.1f}%", f"${opn_balance:,.0f}")
-    
-    with col3:
-        scn_contribution = (scn_balance / total_balance * 100) if total_balance > 0 else 0
-        st.metric("SCN Contribution", f"{scn_contribution:.1f}%", f"${scn_balance:,.0f}")
-    
-    # Strategic recommendations based on combined analysis
-    if total_hours_excess_dec30 < 0:
-        shortfall_amount = abs(total_hours_excess_dec30) * hourly_rate
-        st.error(f"💰 **FUNDING SHORTFALL**: ${shortfall_amount:,.0f} additional funding needed for full branch operations through Dec 30")
-        
-        # Calculate what percentage of branch could be sustained
-        sustainable_percentage = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
-        sustainable_people = int(branch_size * sustainable_percentage / 100)
-        
-        st.warning(f"⚠️ **ALTERNATIVE**: Current funding can sustain {sustainable_people} people ({sustainable_percentage:.1f}% of branch) through Dec 30")
-        
-    elif total_hours_excess_dec30 > 0:
-        excess_amount = total_hours_excess_dec30 * hourly_rate
-        excess_months = total_hours_excess_dec30 / (8 * branch_size * 21.7)  # Average working days per month
-        
-        st.success(f"💡 **FUNDING SURPLUS**: ${excess_amount:,.0f} available for additional scope or {excess_months:.1f} extra months of operations")
-    
-    # Charts
-    st.markdown("### 📈 Financial Visualizations")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        fig = go.Figure()
-        fig.add_trace(go.Bar(name='Labor', x=['OMN', 'OPN', 'SCN'], y=[omn_l, opn_l, scn_l], marker_color='#3498db'))
-        fig.add_trace(go.Bar(name='Material', x=['OMN', 'OPN', 'SCN'], y=[omn_m, opn_m, scn_m], marker_color='#e74c3c'))
-        fig.add_trace(go.Bar(name='Travel', x=['OMN', 'OPN', 'SCN'], y=[omn_t, opn_t, scn_t], marker_color='#f39c12'))
-        fig.update_layout(title="L/M/T Breakdown", barmode='stack', height=400)
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        fig2 = px.bar(x=['OMN', 'OPN', 'SCN'], y=[omn_balance, opn_balance, scn_balance], 
-                      title="Balance by Appropriation", color=['OMN', 'OPN', 'SCN'], 
-                      color_discrete_map=colors, height=400)
-        fig2.update_layout(showlegend=False)
-        st.plotly_chart(fig2, use_container_width=True)
-    
-    # Benedicks Analysis Charts (if enabled and data available)
-    if enable_pm_analysis and st.session_state.benedicks_data:
-        st.markdown("### 📊 Benedicks Portfolio Visualizations")
-        benedicks_data = st.session_state.benedicks_data
-        benedicks_projects = st.session_state.benedicks_projects
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Benedicks Portfolio by Appropriation
-            summary = benedicks_data['summary']
-            appn_balances = [summary['omn']['balance'], summary['opn']['balance'], summary['scn']['balance'], summary['other']['balance']]
-            appn_names = ['OMN', 'OPN', 'SCN', 'Other']
-            
-            # Filter out zero balances for cleaner pie chart
-            filtered_data = [(name, balance) for name, balance in zip(appn_names, appn_balances) if balance > 0]
-            if filtered_data:
-                names, balances = zip(*filtered_data)
-                fig3 = px.pie(values=balances, names=names, 
-                             title="Benedicks Portfolio by Appropriation",
-                             color_discrete_map={'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60', 'Other': '#9b59b6'})
-                st.plotly_chart(fig3, use_container_width=True)
-        
-        with col2:
-            # Top Benedicks BL Codes
-            if benedicks_data['bl_codes']:
-                top_bl_codes = benedicks_data['bl_codes'][:8]  # Top 8 for readability
-                bl_names = [bl[0][:20] + "..." if len(bl[0]) > 20 else bl[0] for bl, _ in top_bl_codes]  # Truncate long names
-                bl_balances = [bl_data['balance'] for _, bl_data in top_bl_codes]
-                
-                fig4 = px.bar(x=bl_names, y=bl_balances,
-                             title="Top Benedicks BL Codes by Balance",
-                             color=bl_balances,
-                             color_continuous_scale='viridis')
-                fig4.update_layout(showlegend=False, xaxis_tickangle=-45, 
-                                 xaxis_title="BL Code", yaxis_title="Balance ($)")
-                st.plotly_chart(fig4, use_container_width=True)
-        
-        # Additional Benedicks analysis charts
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            # Project count by appropriation
-            appn_counts = [summary['omn']['count'], summary['opn']['count'], summary['scn']['count'], summary['other']['count']]
-            filtered_count_data = [(name, count) for name, count in zip(appn_names, appn_counts) if count > 0]
-            if filtered_count_data:
-                names, counts = zip(*filtered_count_data)
-                fig5 = px.bar(x=names, y=counts,
-                             title="Benedicks Project Count by Appropriation",
-                             color=names,
-                             color_discrete_map={'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60', 'Other': '#9b59b6'})
-                fig5.update_layout(showlegend=False, yaxis_title="Number of Projects")
-                st.plotly_chart(fig5, use_container_width=True)
-        
-        with col4:
-            # L/M/T breakdown for Benedicks portfolio
-            lmt_data = {
-                'Type': ['Labor', 'Material', 'Travel'],
-                'OMN': [summary['omn']['L'], summary['omn']['M'], summary['omn']['T']],
-                'OPN': [summary['opn']['L'], summary['opn']['M'], summary['opn']['T']],
-                'SCN': [summary['scn']['L'], summary['scn']['M'], summary['scn']['T']]
-            }
-            
-            fig6 = go.Figure()
-            fig6.add_trace(go.Bar(name='OMN', x=lmt_data['Type'], y=lmt_data['OMN'], marker_color='#e74c3c'))
-            fig6.add_trace(go.Bar(name='OPN', x=lmt_data['Type'], y=lmt_data['OPN'], marker_color='#f39c12'))
-            fig6.add_trace(go.Bar(name='SCN', x=lmt_data['Type'], y=lmt_data['SCN'], marker_color='#27ae60'))
-            fig6.update_layout(title="Benedicks Portfolio L/M/T Breakdown", barmode='stack', height=400)
-            st.plotly_chart(fig6, use_container_width=True)
-    
-    # Export
-    st.markdown("### 📤 Export Results")
-    
-    export_data = {
-        'Metric': ['Total Balance', 'Monthly Personnel Cost', 'Months to Dec 30', 'OMN Balance', 'OMN Expiry', 'OPN Balance', 'OPN Expiry', 'SCN Balance', 'SCN Expiry'],
-        'Value': [f"${total_balance:,.0f}", f"${monthly_personnel_cost:,.0f}", f"{months_to_dec30:.1f}", 
-                 f"${omn_balance:,.0f}", omn_expiry.strftime('%Y-%m-%d'), f"${opn_balance:,.0f}", 
-                 opn_expiry.strftime('%Y-%m-%d'), f"${scn_balance:,.0f}", scn_expiry.strftime('%Y-%m-%d')]
-    }
-    
-    csv_buffer = io.StringIO()
-    pd.DataFrame(export_data).to_csv(csv_buffer, index=False)
-    
-    # Export Benedicks data if available
-    benedicks_export_available = False
-    if enable_pm_analysis and st.session_state.benedicks_projects:
-        benedicks_projects = st.session_state.benedicks_projects
-        benedicks_export_data = []
-        for project in benedicks_projects:
-            benedicks_export_data.append({
-                'PM': project['PM'],
-                'APPN': project['APPN'],
-                'Type': project['Type'],
-                'Balance': project['Balance'],
-                'BL_Code': project['BL_Code'],
-                'Description': project['Description']
-            })
-        
-        benedicks_csv_buffer = io.StringIO()
-        pd.DataFrame(benedicks_export_data).to_csv(benedicks_csv_buffer, index=False)
-        benedicks_export_available = True
-    
-    if charging_strategy:
-        strategy_export = []
-        for i, strategy in enumerate(charging_strategy, 1):
-            strategy_export.append({
-                'Phase': i, 'APPN': strategy['appn'], 'Start_Date': strategy['start_date'].strftime('%Y-%m-%d'),
-                'End_Date': strategy['end_date'].strftime('%Y-%m-%d'), 'Amount': strategy['amount'],
-                'Expiry_Date': strategy['expiry_date'].strftime('%Y-%m-%d'), 'Urgency': strategy['urgency']
-            })
-        
-        strategy_csv_buffer = io.StringIO()
-        pd.DataFrame(strategy_export).to_csv(strategy_csv_buffer, index=False)
-        
-        if benedicks_export_available:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col3:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("📅 Download Charging Strategy", strategy_csv_buffer.getvalue(),
-                                 f"Charging_Strategy_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-    else:
-        if benedicks_export_available:
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                                 f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-            with col2:
-                st.download_button("👨‍💼 Download Benedicks Portfolio", benedicks_csv_buffer.getvalue(),
-                                 f"Benedicks_Portfolio_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-        else:
-            st.download_button("📊 Download Analysis CSV", csv_buffer.getvalue(), 
-                             f"BFM_Analysis_{selected_bl}_{report_date.strftime('%Y%m%d')}.csv", mime="text/csv")
-
-# Footer
-st.markdown("---")
-st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging, Expiry Analysis & Benedicks Portfolio Analysis</p></div>', unsafe_allow_html=True)
+st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging, Expiry Analysis, & PM Portfolio Insights</p></div>', unsafe_allow_html=True)
