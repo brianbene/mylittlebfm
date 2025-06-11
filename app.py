@@ -150,8 +150,8 @@ You should:
 
 Keep responses concise but informative. Use military/Navy terminology appropriately."""
 
-        # Use a simpler approach - Google AI Studio API (Gemini)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+        # Use the correct Gemini model endpoint
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
         
         headers = {
             'Content-Type': 'application/json',
