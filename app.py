@@ -4,6 +4,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 import io
+import json
+import requests
 
 st.set_page_config(page_title="My Little BFM", page_icon="💰", layout="wide")
 
@@ -47,6 +49,14 @@ with st.sidebar:
     
     st.subheader("👨‍💼 Benedicks Analysis")
     enable_pm_analysis = st.checkbox("Enable Benedicks Portfolio Analysis", value=False)
+    
+    st.subheader("🤖 AI Assistant")
+    enable_ai_chat = st.checkbox("Enable BFM AI Assistant", value=False)
+    
+    # Built-in API configuration
+    GOOGLE_API_KEY = "AIzaSyBynjotD4bpji6ThOtpO14tstc-qF2cFp4"
+    PROJECT_ID = "bfm-analysis-project"  # Default project ID
+    REGION = "us-central1"
 
 def get_federal_holidays(fiscal_year):
     holidays = []
@@ -76,6 +86,106 @@ def get_appropriation_expiry_date(appn, fiscal_year):
         return datetime(fiscal_year, 12, 30)
     else:
         return datetime(fiscal_year, 9, 30)
+
+def format_analysis_for_ai(extracted_data, benedicks_data, total_balance, monthly_personnel_cost, charging_strategy):
+    """
+    Format analysis data for AI consumption
+    """
+    context = {
+        "financial_summary": {
+            "total_balance": total_balance,
+            "monthly_personnel_cost": monthly_personnel_cost,
+            "omn_balance": extracted_data['omn']['balance'] if extracted_data else 0,
+            "opn_balance": extracted_data['opn']['balance'] if extracted_data else 0,
+            "scn_balance": extracted_data['scn']['balance'] if extracted_data else 0
+        },
+        "benedicks_portfolio": {
+            "total_projects": benedicks_data['total_count'] if benedicks_data else 0,
+            "total_value": benedicks_data['total_balance'] if benedicks_data else 0,
+            "top_bl_codes": [bl[0] for bl in benedicks_data['bl_codes'][:5]] if benedicks_data and benedicks_data['bl_codes'] else []
+        },
+        "charging_strategy": [
+            {
+                "phase": i+1,
+                "appn": strategy['appn'],
+                "urgency": strategy['urgency'],
+                "amount": strategy['amount'],
+                "timeframe": f"{strategy['start_date'].strftime('%b %Y')} - {strategy['end_date'].strftime('%b %Y')}"
+            } for i, strategy in enumerate(charging_strategy[:3])  # Top 3 phases
+        ] if charging_strategy else []
+    }
+    return context
+
+def call_google_ai_api(user_message, context, api_key, project_id, region):
+    """
+    Call Google Cloud Vertex AI API
+    """
+    if not api_key or not project_id:
+        return "Please configure your Google Cloud credentials in the sidebar."
+    
+    try:
+        # Format the system prompt with BFM context
+        system_prompt = f"""You are a Budget and Financial Management (BFM) AI Assistant specializing in Navy appropriations and project funding. 
+
+Current Analysis Context:
+- Total Balance: ${context['financial_summary']['total_balance']:,.0f}
+- Monthly Personnel Cost: ${context['financial_summary']['monthly_personnel_cost']:,.0f}
+- OMN Balance: ${context['financial_summary']['omn_balance']:,.0f}
+- OPN Balance: ${context['financial_summary']['opn_balance']:,.0f}
+- SCN Balance: ${context['financial_summary']['scn_balance']:,.0f}
+
+Benedicks Portfolio:
+- Projects: {context['benedicks_portfolio']['total_projects']}
+- Value: ${context['benedicks_portfolio']['total_value']:,.0f}
+- Top BL Codes: {', '.join(context['benedicks_portfolio']['top_bl_codes'])}
+
+Current Charging Strategy: {json.dumps(context['charging_strategy'], indent=2)}
+
+You should:
+1. Answer questions about appropriations (OMN, OPN, SCN), funding balances, and charging strategies
+2. Explain BFM concepts in clear, actionable terms
+3. Provide strategic recommendations based on the current analysis
+4. Help with budget planning and appropriation management
+5. Reference specific data from the analysis when relevant
+
+Keep responses concise but informative. Use military/Navy terminology appropriately."""
+
+        # Use a simpler approach - Google AI Studio API (Gemini)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+        
+        headers = {
+            'Content-Type': 'application/json',
+        }
+        
+        data = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": f"{system_prompt}\n\nUser Question: {user_message}"}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.7,
+                "topK": 40,
+                "topP": 0.95,
+                "maxOutputTokens": 1024,
+            }
+        }
+        
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if 'candidates' in result and len(result['candidates']) > 0:
+                return result['candidates'][0]['content']['parts'][0]['text']
+            else:
+                return "I received an empty response. Please try rephrasing your question."
+        else:
+            return f"API Error: {response.status_code} - {response.text}"
+            
+    except Exception as e:
+        return f"Error connecting to Google AI: {str(e)}"
 
 def is_expiring_soon(report_date, expiry_date, months=2):
     warning_date = report_date + timedelta(days=months * 30)
@@ -249,6 +359,112 @@ if 'benedicks_data' not in st.session_state:
     st.session_state.benedicks_data = None
 if 'benedicks_projects' not in st.session_state:
     st.session_state.benedicks_projects = []
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'analysis_context' not in st.session_state:
+    st.session_state.analysis_context = None
+
+# BFM AI Assistant Section
+if enable_ai_chat and GOOGLE_API_KEY:
+    st.markdown("### 🤖 BFM AI Assistant")
+    st.info("💡 Ask questions about your financial analysis, appropriations, or get strategic recommendations!")
+    
+    # Create analysis context for AI
+    current_context = format_analysis_for_ai(
+        st.session_state.extracted_data,
+        st.session_state.benedicks_data,
+        sum([st.session_state.extracted_data[key]['balance'] for key in st.session_state.extracted_data.keys()]) if st.session_state.extracted_data else 0,
+        hourly_rate * hours_per_week * 4.3 * branch_size * (1 + overhead_rate / 100),
+        []  # Will be populated after calculation
+    )
+    st.session_state.analysis_context = current_context
+    
+    # Chat interface
+    with st.container():
+        st.markdown("#### 💬 Chat with BFM Assistant")
+        
+        # Display chat history
+        chat_container = st.container()
+        with chat_container:
+            for i, (role, message) in enumerate(st.session_state.chat_history):
+                if role == "user":
+                    st.markdown(f"""
+                    <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 1rem; border-radius: 15px; margin: 0.5rem 0; text-align: right;">
+                        <strong>You:</strong> {message}
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div style="background: linear-gradient(135deg, #f093fb, #f5576c); color: white; padding: 1rem; border-radius: 15px; margin: 0.5rem 0;">
+                        <strong>🤖 BFM Assistant:</strong> {message}
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        # Chat input
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            user_input = st.text_input("Ask about your BFM analysis...", key="chat_input", placeholder="e.g., 'What's my funding status?' or 'Should I charge to OMN or OPN?'")
+        with col2:
+            send_message = st.button("Send 🚀", type="primary")
+        
+        # Quick question buttons
+        st.markdown("##### Quick Questions:")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            if st.button("💰 Funding Status"):
+                user_input = "What's my current funding status and balance?"
+                send_message = True
+        with col2:
+            if st.button("⚡ Charging Recommendation"):
+                user_input = "Which appropriation should I charge to this month?"
+                send_message = True
+        with col3:
+            if st.button("📊 Benedicks Portfolio"):
+                user_input = "Tell me about the Benedicks portfolio analysis"
+                send_message = True
+        with col4:
+            if st.button("🚨 Risk Assessment"):
+                user_input = "Are there any funding risks I should be concerned about?"
+                send_message = True
+        
+        # Process user input
+        if send_message and user_input:
+            # Add user message to history
+            st.session_state.chat_history.append(("user", user_input))
+            
+            # Get AI response
+            with st.spinner("🤖 BFM Assistant is thinking..."):
+                ai_response = call_google_ai_api(
+                    user_input, 
+                    st.session_state.analysis_context,
+                    GOOGLE_API_KEY,
+                    PROJECT_ID,
+                    REGION
+                )
+            
+            # Add AI response to history
+            st.session_state.chat_history.append(("assistant", ai_response))
+            
+            # Clear input and rerun to show new messages
+            st.rerun()
+        
+        # Clear chat history button
+        if st.button("🗑️ Clear Chat History"):
+            st.session_state.chat_history = []
+            st.rerun()
+
+elif enable_ai_chat:
+    st.markdown("### 🤖 BFM AI Assistant")
+    st.warning("⚠️ Please configure your Google Cloud API credentials.")
+    st.markdown("""
+    **The AI Assistant can help with:**
+    - 💰 Explain your funding status and balances
+    - 📊 Analyze appropriation strategies (OMN/OPN/SCN)
+    - 🎯 Provide charging recommendations
+    - ⚠️ Identify funding risks and opportunities
+    - 📈 Interpret financial visualizations
+    - 🤖 Answer BFM and Navy appropriation questions
+    """)
 
 # Benedicks Portfolio Analysis Section (if enabled and file uploaded)
 if enable_pm_analysis and uploaded_file:
@@ -819,6 +1035,17 @@ if st.button("🚀 Calculate Analysis", type="primary"):
             fig6.update_layout(title="Benedicks Portfolio L/M/T Breakdown", barmode='stack', height=400)
             st.plotly_chart(fig6, use_container_width=True)
     
+    # Update analysis context for AI after calculation
+    if enable_ai_chat and GOOGLE_API_KEY:
+        updated_context = format_analysis_for_ai(
+            st.session_state.extracted_data,
+            st.session_state.benedicks_data,
+            total_balance,
+            monthly_personnel_cost,
+            charging_strategy
+        )
+        st.session_state.analysis_context = updated_context
+
     # Export
     st.markdown("### 📤 Export Results")
     
