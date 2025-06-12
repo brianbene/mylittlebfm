@@ -29,7 +29,6 @@ st.markdown("""
 # --- Core Functions ---
 def get_federal_holidays(year):
     if year in [2024, 2025]:
-        # Federal Holidays for FY2025 (Oct 2024 - Sep 2025)
         return [
             datetime(2024, 10, 14), datetime(2024, 11, 11), datetime(2024, 11, 28),
             datetime(2024, 12, 25), datetime(2025, 1, 1), datetime(2025, 1, 20),
@@ -55,7 +54,6 @@ def get_appropriation_expiry_date(appn, fy):
     elif 'SCN' in appn.upper(): return datetime(fy + 2, 9, 30)
     else: return datetime(fy, 9, 30)
 
-# FIXED: Added the missing function definition
 def is_expiring_soon(report_dt, expiry_dt, months=2):
     return expiry_dt <= report_dt + timedelta(days=months * 30.5)
 
@@ -105,17 +103,22 @@ with col3:
     st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
     scn_balance = st.number_input("SCN Balance ($)", value=1148438.0, key="scn_b", label_visibility="collapsed")
 
+# --- Analysis Trigger and Display ---
 if st.button("🚀 Calculate Analysis", type="primary", use_container_width=True):
-    # --- Perform All Calculations on Button Click ---
+    
+    # CORRECTED: All calculations are now safely inside the button's 'if' block
     report_datetime = datetime.combine(report_date, datetime.min.time())
     monthly_personnel_cost = hourly_rate * 40 * 4.333 * branch_size
     total_balance = omn_balance + opn_balance + scn_balance
 
+    # This dictionary is now defined *after* its variables are created
     appropriations = {
-        'OMN': {'balance': omn_balance, 'lmt': {'L': omn_balance, 'M': 0, 'T': 0}, 'expiry': get_appropriation_expiry_date('OMN', fiscal_year)},
-        'OPN': {'balance': opn_balance, 'lmt': {'L': opn_balance, 'M': 0, 'T': 0}, 'expiry': get_appropriation_expiry_date('OPN', fiscal_year)},
-        'SCN': {'balance': scn_balance, 'lmt': {'L': scn_balance, 'M': 0, 'T': 0}, 'expiry': get_appropriation_expiry_date('SCN', fiscal_year)}
+        'OMN': {'balance': omn_balance, 'expiry': get_appropriation_expiry_date('OMN', fiscal_year)},
+        'OPN': {'balance': opn_balance, 'expiry': get_appropriation_expiry_date('OPN', fiscal_year)},
+        'SCN': {'balance': scn_balance, 'expiry': get_appropriation_expiry_date('SCN', fiscal_year)}
     }
+    
+    # This loop can now run without error
     for key, val in appropriations.items():
         val['days_left'] = (val['expiry'] - report_datetime).days
         val['work_days_left'] = count_working_days(report_datetime, val['expiry'])
@@ -123,7 +126,8 @@ if st.button("🚀 Calculate Analysis", type="primary", use_container_width=True
 
     # --- Update AI Context in Session State ---
     st.session_state.analysis_context = {
-        "report_date": report_date.isoformat(), "total_balance": total_balance,
+        "report_date": report_date.isoformat(),
+        "total_balance": total_balance,
         "monthly_personnel_cost": monthly_personnel_cost,
         "appropriations": {k: {**v, 'expiry': v['expiry'].isoformat()} for k, v in appropriations.items()}
     }
@@ -156,8 +160,8 @@ if enable_ai_chat:
     st.markdown("---")
     st.markdown("### 🤖 BFM AI Assistant")
 
-    if not GOOGLE_API_KEY.startswith("AIza"):
-        st.error("Invalid Google AI API Key. Please ensure the key is correct.")
+    if not GOOGLE_API_KEY or not GOOGLE_API_KEY.startswith("AIza"):
+        st.warning("Please enter a valid Google AI API Key in the script to enable the chatbot.")
     else:
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
