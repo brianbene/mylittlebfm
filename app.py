@@ -4,8 +4,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 import io
-import json
-import requests
 
 st.set_page_config(page_title="My Little BFM", page_icon="💰", layout="wide")
 
@@ -14,10 +12,8 @@ st.markdown("""
 <style>
 .main-header {background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2rem; border-radius: 15px; color: white; text-align: center; margin-bottom: 2rem;}
 .metric-card {background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 1.5rem; border-radius: 15px; color: white; text-align: center; margin: 0.5rem 0;}
-.bubble {background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 20px; padding: 1.5rem; margin: 1rem 0; border: 1px solid rgba(255,255,255,0.3);}
 .status-card {border-radius: 15px; padding: 1rem; text-align: center; margin: 0.5rem 0; color: white;}
-.pm-analysis-card {background: linear-gradient(135deg, #8e44ad, #9b59b6); color: white; padding: 1.5rem; border-radius: 15px; margin: 1rem 0; border: 2px solid #fff;}
-.urgent-expiry {background: linear-gradient(135deg, #e74c3c, #c0392b) !important; animation: pulse 2s infinite;}
+.urgent-expiry {animation: pulse 2s infinite;}
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
   70% { box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
@@ -26,212 +22,160 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<div class="main-header"><h1>🚀 My Little BFM</h1><p>Budget & Financial Management System</p></div>', unsafe_allow_html=True)
+# --- Function Definitions ---
+def get_federal_holidays(year):
+    if year == 2024 or year == 2025:
+        # Federal Holidays for FY2025 (Oct 2024 - Sep 2025)
+        return [
+            datetime(2024, 10, 14), datetime(2024, 11, 11), datetime(2024, 11, 28),
+            datetime(2024, 12, 25), datetime(2025, 1, 1), datetime(2025, 1, 20),
+            datetime(2025, 2, 17), datetime(2025, 5, 26), datetime(2025, 6, 19),
+            datetime(2025, 7, 4), datetime(2025, 9, 1)
+        ]
+    return []
 
-# --- Functions (No Changes Here) ---
-def get_federal_holidays(fiscal_year):
-    holidays = []
-    if fiscal_year == 2025:
-        holidays = [datetime(2024, 10, 14), datetime(2024, 11, 11), datetime(2024, 11, 28), 
-                    datetime(2024, 11, 29), datetime(2024, 12, 25), datetime(2025, 1, 1),
-                    datetime(2025, 1, 20), datetime(2025, 2, 17), datetime(2025, 5, 26),
-                    datetime(2025, 6, 19), datetime(2025, 7, 4), datetime(2025, 9, 1)]
-    return holidays
-
-def count_working_days(start, end, fiscal_year):
-    if start > end: return 0
-    holidays = get_federal_holidays(fiscal_year)
+def count_working_days(start_date, end_date):
+    if start_date > end_date:
+        return 0
+    
+    holidays_start_year = get_federal_holidays(start_date.year)
+    holidays_end_year = get_federal_holidays(end_date.year)
+    holidays = set(holidays_start_year + holidays_end_year)
+    
     working_days = 0
-    current = start
-    while current <= end:
-        if current.weekday() < 5 and current not in holidays:
+    current_date = start_date
+    while current_date <= end_date:
+        if current_date.weekday() < 5 and current_date not in holidays:
             working_days += 1
-        current += pd.Timedelta(days=1)
+        current_date += timedelta(days=1)
     return working_days
 
-def get_appropriation_expiry_date(appn, fiscal_year):
+def get_appropriation_expiry_date(appn, fy):
     if 'OMN' in appn.upper():
-        return datetime(fiscal_year, 9, 30)
+        return datetime(fy, 9, 30)
     elif 'OPN' in appn.upper():
-        return datetime(fiscal_year + 1, 9, 30)
+        return datetime(fy + 1, 9, 30)
     elif 'SCN' in appn.upper():
-        return datetime(fiscal_year + 2, 9, 30)
+        return datetime(fy + 2, 9, 30)
     else:
-        return datetime(fiscal_year, 9, 30)
+        return datetime(fy, 9, 30)
 
-def is_expiring_soon(report_date, expiry_date, months=2):
-    return expiry_date <= report_date + timedelta(days=months * 30.5)
+def is_expiring_soon(report_dt, expiry_dt, months=2):
+    return expiry_dt <= report_dt + timedelta(days=months * 30.5)
 
-def analyze_benedicks_portfolio(file):
-    try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
-        benedicks_mask = df.iloc[:, 3].astype(str).str.lower().str.contains('benedick', na=False)
-        benedicks_data = df[benedicks_mask]
-        if benedicks_data.empty: return None, "No Benedicks entries found", []
-        
-        non_bl12200_mask = ~benedicks_data.iloc[:, 7].astype(str).str.contains('BL12200', na=False)
-        filtered_data = benedicks_data[non_bl12200_mask]
-        if filtered_data.empty: return None, "All Benedicks entries are BL12200", []
+# --- Sidebar and Input Widgets ---
+st.markdown('<div class="main-header"><h1>🚀 My Little BFM</h1><p>Budget & Financial Management System</p></div>', unsafe_allow_html=True)
 
-        result = {'omn': {}, 'opn': {}, 'scn': {}, 'other': {}}
-        for k in result: result[k] = {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'count': 0}
-        
-        benedicks_projects, bl_code_summary = [], {}
-        for _, row in filtered_data.iterrows():
-            try:
-                balance = float(str(row.iloc[16]).replace('$', '').replace(',', '').strip())
-                if balance == 0: continue
-                appn, type_code, pm, bl, desc = str(row.iloc[2]), str(row.iloc[1]), str(row.iloc[3]), str(row.iloc[7]), str(row.iloc[5])
-                
-                benedicks_projects.append({'PM': pm, 'APPN': appn, 'Type': type_code, 'Balance': balance, 'BL_Code': bl, 'Description': desc})
-                
-                if bl not in bl_code_summary: bl_code_summary[bl] = {'balance': 0.0, 'count': 0, 'types': {}}
-                bl_code_summary[bl]['balance'] += balance
-                bl_code_summary[bl]['count'] += 1
-                if type_code not in bl_code_summary[bl]['types']: bl_code_summary[bl]['types'][type_code] = {'balance': 0.0, 'count': 0}
-                bl_code_summary[bl]['types'][type_code]['balance'] += balance
-                bl_code_summary[bl]['types'][type_code]['count'] += 1
-                
-                key = 'omn' if 'OMN' in appn.upper() else 'scn' if 'SCN' in appn.upper() else 'opn' if 'OPN' in appn.upper() else 'other'
-                result[key]['balance'] += balance
-                result[key]['count'] += 1
-                
-                if type_code == 'L': result[key]['L'] += balance
-                elif type_code == 'M': result[key]['M'] += balance
-                elif type_code == 'T': result[key]['T'] += balance
-                else: result[key]['L'] += balance * 0.6; result[key]['M'] += balance * 0.3; result[key]['T'] += balance * 0.1
-            except (ValueError, TypeError): continue
-            
-        benedicks_projects.sort(key=lambda x: x['Balance'], reverse=True)
-        total_balance = sum(v['balance'] for v in result.values())
-        return {'summary': result, 'projects': benedicks_projects, 'bl_codes': sorted(bl_code_summary.items(), key=lambda x: x[1]['balance'], reverse=True)[:10], 'total_balance': total_balance, 'total_count': len(benedicks_projects)}, f"✅ Found {len(benedicks_projects)} projects worth ${total_balance:,.0f}", benedicks_projects
-    except Exception as e: return None, f"❌ Error: {e}", []
-
-def extract_vla_data(file, target_bl):
-    try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
-        bl_data = df[df.iloc[:, 7].astype(str).str.contains(target_bl, na=False)]
-        if bl_data.empty: return None, f"No data for {target_bl}", []
-
-        result = {'omn': {}, 'opn': {}, 'scn': {}}
-        for k in result: result[k] = {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0}
-        chargeable_objects = []
-
-        for _, row in bl_data.iterrows():
-            try:
-                balance = float(str(row.iloc[16]).replace('$', '').replace(',', '').strip())
-                if balance > 0:
-                    appn, type_code, co = str(row.iloc[2]), str(row.iloc[1]), str(row.iloc[3])
-                    chargeable_objects.append({'CO_Number': co, 'APPN': appn, 'Type': type_code, 'Balance': balance})
-                    key = 'omn' if 'OMN' in appn.upper() else 'scn' if 'SCN' in appn.upper() else 'opn'
-                    result[key]['balance'] += balance
-                    if type_code == 'L': result[key]['L'] += balance
-                    elif type_code == 'M': result[key]['M'] += balance
-                    elif type_code == 'T': result[key]['T'] += balance
-                    else: result[key]['L']+=balance*0.6; result[key]['M']+=balance*0.3; result[key]['T']+=balance*0.1
-            except (ValueError, TypeError): continue
-        return result, f"✅ Extracted data for {target_bl}", sorted(chargeable_objects, key=lambda x: x['Balance'], reverse=True)[:5]
-    except Exception as e: return None, f"❌ Error: {e}", []
-
-# --- Sidebar and Session State (Moved to top for clarity) ---
 with st.sidebar:
     st.header("⚙️ Configuration")
     uploaded_file = st.file_uploader("📊 Upload VLA Excel", type=['xlsx', 'xls'])
+    
     st.subheader("👥 Personnel")
     branch_size = st.number_input("Branch Size", min_value=1, value=17)
     hourly_rate = st.number_input("Hourly Rate ($)", min_value=0.01, value=141.36, step=0.01)
-    # ... other sidebar items
+    hours_per_week = st.number_input("Hours/Week", min_value=1, max_value=80, value=40)
+    
+    st.subheader("📅 Dates & Fiscal Year")
+    report_date = st.date_input("Report Date", value=date.today())
     fiscal_year = st.selectbox("Select Fiscal Year", [2024, 2025, 2026, 2027], index=1)
-    selected_bl = st.selectbox("BL Code", ['BL12200', 'BL10000', 'BL12000', 'BL12100', 'BL12300', 'BL16200', 'BL31100', 'BL41000'])
-    enable_pm_analysis = st.checkbox("Enable Benedicks Portfolio Analysis", value=False)
 
-
-# Initialize session state
-for key in ['extracted_data', 'last_bl_code', 'top_cos', 'benedicks_data', 'benedicks_projects']:
-    if key not in st.session_state:
-        st.session_state[key] = None if 'data' in key else []
-
-# --- Main App Body ---
-
-# Data Input Section - This MUST run before the button to define the variables
-if uploaded_file:
-    if st.session_state.last_bl_code != selected_bl:
-        st.session_state.extracted_data, message, st.session_state.top_cos = extract_vla_data(uploaded_file, selected_bl)
-        st.session_state.last_bl_code = selected_bl
-        st.info(message)
-    extracted_data = st.session_state.extracted_data
-else:
-    extracted_data = None
-
-# Fallback to default values if no data is extracted
-data_source = extracted_data if extracted_data else {
-    'omn': {'balance': 44053.0, 'L': 44053.0, 'M': 0.0, 'T': 0.0},
-    'opn': {'balance': 1947299.0, 'L': 1947299.0, 'M': 0.0, 'T': 0.0},
-    'scn': {'balance': 1148438.0, 'L': 813595.0, 'M': 334843.0, 'T': 0.0}
-}
-
+# --- Data Input Fields ---
 col1, col2, col3 = st.columns(3)
 with col1:
     st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-    omn_balance = st.number_input("OMN Balance ($)", value=float(data_source['omn']['balance']))
-    omn_l = st.number_input("OMN Labor ($)", value=float(data_source['omn']['L']))
-    omn_m = st.number_input("OMN Material ($)", value=float(data_source['omn']['M']))
-    omn_t = st.number_input("OMN Travel ($)", value=float(data_source['omn']['T']))
-
+    omn_balance = st.number_input("OMN Balance ($)", value=44053.0)
+    omn_l = st.number_input("OMN Labor ($)", value=44053.0)
+    omn_m = st.number_input("OMN Material ($)", value=0.0)
+    omn_t = st.number_input("OMN Travel ($)", value=0.0)
 with col2:
     st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-    opn_balance = st.number_input("OPN Balance ($)", value=float(data_source['opn']['balance']))
-    opn_l = st.number_input("OPN Labor ($)", value=float(data_source['opn']['L']))
-    opn_m = st.number_input("OPN Material ($)", value=float(data_source['opn']['M']))
-    opn_t = st.number_input("OPN Travel ($)", value=float(data_source['opn']['T']))
-
+    opn_balance = st.number_input("OPN Balance ($)", value=1947299.0)
+    opn_l = st.number_input("OPN Labor ($)", value=1947299.0)
+    opn_m = st.number_input("OPN Material ($)", value=0.0)
+    opn_t = st.number_input("OPN Travel ($)", value=0.0)
 with col3:
     st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-    scn_balance = st.number_input("SCN Balance ($)", value=float(data_source['scn']['balance']))
-    scn_l = st.number_input("SCN Labor ($)", value=float(data_source['scn']['L']))
-    scn_m = st.number_input("SCN Material ($)", value=float(data_source['scn']['M']))
-    scn_t = st.number_input("SCN Travel ($)", value=float(data_source['scn']['T']))
+    scn_balance = st.number_input("SCN Balance ($)", value=1148438.0)
+    scn_l = st.number_input("SCN Labor ($)", value=813595.0)
+    scn_m = st.number_input("SCN Material ($)", value=334843.0)
+    scn_t = st.number_input("SCN Travel ($)", value=0.0)
 
-# The "Calculate Analysis" button and all logic that USES the input variables
-# has been moved inside this block to prevent the NameError.
+# --- Analysis Trigger and Display ---
 if st.button("🚀 Calculate Analysis", type="primary"):
+    # ALL CALCULATIONS AND DISPLAY LOGIC NOW LIVE INSIDE THE BUTTON'S 'IF' BLOCK
     
-    # --- All calculations are now safely inside this block ---
     report_datetime = datetime.combine(report_date, datetime.min.time())
     
-    # Perform all calculations using the 'omn_balance', 'opn_balance', etc. variables defined above
+    # Expiry Dates
+    omn_expiry = get_appropriation_expiry_date('OMN', fiscal_year)
+    opn_expiry = get_appropriation_expiry_date('OPN', fiscal_year)
+    scn_expiry = get_appropriation_expiry_date('SCN', fiscal_year)
+
+    # Core Financial Metrics
+    monthly_personnel_cost = hourly_rate * hours_per_week * 4.333 * branch_size
     total_balance = omn_balance + opn_balance + scn_balance
-    
-    monthly_personnel_cost = hourly_rate * hours_per_week * 4.3 * branch_size * (1 + overhead_rate / 100)
 
-    # ... (The rest of your calculation and display logic from the original script) ...
-    # ... (This includes the URGENT ALERTS, SMART APPN CHARGING STRATEGY, etc.) ...
+    # Days Left Calculation
+    days_to_omn_expiry = (omn_expiry - report_datetime).days
+    days_to_opn_expiry = (opn_expiry - report_datetime).days
+    days_to_scn_expiry = (scn_expiry - report_datetime).days
     
-    # Example of a corrected calculation to prevent division by zero
-    st.markdown("### 🎯 Combined Branch Coverage Analysis (to Dec 30)")
-    dec_30_date = datetime(fiscal_year, 12, 30)
-    working_days_to_dec30 = count_working_days(report_datetime, dec_30_date, fiscal_year)
-    total_hours_needed_dec30 = working_days_to_dec30 * 8 * branch_size
-    total_hours_available_dec30 = total_balance / hourly_rate if hourly_rate > 0 else 0
-    total_hours_excess_dec30 = total_hours_available_dec30 - total_hours_needed_dec30
-    coverage_pct_dec30 = (total_hours_available_dec30 / total_hours_needed_dec30 * 100) if total_hours_needed_dec30 > 0 else 0
+    # Working Days Calculation
+    working_days_omn = count_working_days(report_datetime, omn_expiry)
+    working_days_opn = count_working_days(report_datetime, opn_expiry)
+    working_days_scn = count_working_days(report_datetime, scn_expiry)
 
-    # Displaying the results...
-    if coverage_pct_dec30 >= 100:
-        status_color, status_text, status_message = "#27ae60", "✅ FULLY COVERED", "Branch operations secured through Dec 30"
-    elif coverage_pct_dec30 >= 80:
-        status_color, status_text, status_message = "#f39c12", "⚠️ CAUTION", "Adequate coverage but monitor closely"
+    # --- Display Results ---
+    st.markdown("### 📊 Financial Health Overview")
+    kpi_cols = st.columns(3)
+    kpi_cols[0].metric("💰 Total Balance", f"${total_balance:,.0f}")
+    
+    # Guard against division by zero
+    if monthly_personnel_cost > 0:
+        months_of_burn = total_balance / monthly_personnel_cost
+        kpi_cols[1].metric("⏳ Months of Burn", f"{months_of_burn:.1f} months")
     else:
-        status_color, status_text, status_message = "#e74c3c", "🚨 CRITICAL", "Insufficient funding for full branch operations"
-
-    st.markdown(f"""
-    <div style="background: linear-gradient(135deg, {status_color}aa, {status_color}dd); color: white; padding: 2rem; border-radius: 15px; margin: 1rem 0; text-align: center;">
-        <h2>🎯 BRANCH OPERATIONS STATUS: {status_text}</h2>
-        <h3>{status_message}</h3>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # ALL of your other st.markdown, st.metric, and st.plotly_chart calls for displaying results go here.
+        kpi_cols[1].metric("⏳ Months of Burn", "N/A")
+        
+    kpi_cols[2].metric("👩‍💻 Monthly Cost", f"${monthly_personnel_cost:,.0f}")
     
+    st.markdown("---")
+    
+    # Appropriation Status Cards
+    st.markdown("###  Appropriations Status")
+    card_cols = st.columns(3)
+    
+    with card_cols[0]:
+        st.markdown(f'<div class="status-card" style="background: linear-gradient(135deg, #e74c3c, #c0392b);"><h3>OMN</h3><h4>${omn_balance:,.0f}</h4><p>Expires: {omn_expiry.strftime("%b %d, %Y")}</p><p>({days_to_omn_expiry} days / {working_days_omn} work days)</p></div>', unsafe_allow_html=True)
+    with card_cols[1]:
+        st.markdown(f'<div class="status-card" style="background: linear-gradient(135deg, #f39c12, #e67e22);"><h3>OPN</h3><h4>${opn_balance:,.0f}</h4><p>Expires: {opn_expiry.strftime("%b %d, %Y")}</p><p>({days_to_opn_expiry} days / {working_days_opn} work days)</p></div>', unsafe_allow_html=True)
+    with card_cols[2]:
+        st.markdown(f'<div class="status-card" style="background: linear-gradient(135deg, #27ae60, #2ecc71);"><h3>SCN</h3><h4>${scn_balance:,.0f}</h4><p>Expires: {scn_expiry.strftime("%b %d, %Y")}</p><p>({days_to_scn_expiry} days / {working_days_scn} work days)</p></div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # Charting
+    st.markdown("### 📈 Visualizations")
+    chart_cols = st.columns(2)
+    
+    with chart_cols[0]:
+        fig_balance = px.bar(
+            x=['OMN', 'OPN', 'SCN'], 
+            y=[omn_balance, opn_balance, scn_balance],
+            title="Balance by Appropriation",
+            labels={'x': 'Appropriation', 'y': 'Balance'},
+            color=['OMN', 'OPN', 'SCN'],
+            color_discrete_map={'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60'}
+        )
+        st.plotly_chart(fig_balance, use_container_width=True)
+
+    with chart_cols[1]:
+        fig_lmt = go.Figure()
+        fig_lmt.add_trace(go.Bar(name='Labor', x=['OMN', 'OPN', 'SCN'], y=[omn_l, opn_l, scn_l], marker_color='#3498db'))
+        fig_lmt.add_trace(go.Bar(name='Material', x=['OMN', 'OPN', 'SCN'], y=[omn_m, opn_m, scn_m], marker_color='#e74c3c'))
+        fig_lmt.add_trace(go.Bar(name='Travel', x=['OMN', 'OPN', 'SCN'], y=[omn_t, opn_t, scn_t], marker_color='#f39c12'))
+        fig_lmt.update_layout(title="L/M/T Breakdown", barmode='stack')
+        st.plotly_chart(fig_lmt, use_container_width=True)
+
 st.markdown("---")
 st.markdown('<div style="text-align: center; opacity: 0.7;"><p>My Little BFM</p></div>', unsafe_allow_html=True)
