@@ -7,15 +7,17 @@ import io
 import json
 import requests
 
+# --- Configuration & Constants ---
 st.set_page_config(page_title="My Little BFM", page_icon="💰", layout="wide")
+GOOGLE_API_KEY = "AIzaSyBynjotD4bpji6ThOtpO14tstc-qF2cFp4"
 
-# CSS for main page and chatbot
+# --- CSS Styling ---
 st.markdown("""
 <style>
 .main-header {background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2rem; border-radius: 15px; color: white; text-align: center; margin-bottom: 2rem;}
 .metric-card {background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 1.5rem; border-radius: 15px; color: white; text-align: center; margin: 0.5rem 0;}
-.status-card {border-radius: 15px; padding: 1rem; text-align: center; margin: 0.5rem 0; color: white;}
-.urgent-expiry {animation: pulse 2s infinite;}
+.status-card {border-radius: 15px; padding: 1rem; text-align: center; margin: 0.5rem 0; color: white; min-height: 220px;}
+.urgent-expiry {animation: pulse 1.5s infinite;}
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
   70% { box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
@@ -24,7 +26,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Function Definitions ---
+# --- Core Functions ---
 def get_federal_holidays(year):
     if year in [2024, 2025]:
         return [
@@ -36,12 +38,12 @@ def get_federal_holidays(year):
     return []
 
 def count_working_days(start_date, end_date):
-    if start_date > end_date: return 0
+    if start_date.date() > end_date.date(): return 0
     holidays = set(get_federal_holidays(start_date.year) + get_federal_holidays(end_date.year))
     working_days = 0
-    current_date = start_date
-    while current_date <= end_date:
-        if current_date.weekday() < 5 and current_date not in holidays:
+    current_date = start_date.date()
+    while current_date <= end_date.date():
+        if current_date.weekday() < 5 and datetime(current_date.year, current_date.month, current_date.day) not in holidays:
             working_days += 1
         current_date += timedelta(days=1)
     return working_days
@@ -59,20 +61,20 @@ def call_google_ai_api(user_message, context, api_key):
         headers = {'Content-Type': 'application/json'}
         data = {"contents": [{"parts": [{"text": f"{system_prompt}\n\nUser Question: {user_message}"}]}]}
         response = requests.post(url, headers=headers, json=data, timeout=45)
-        if response.status_code == 200:
-            result = response.json()
-            return result['candidates'][0]['content']['parts'][0]['text']
-        else:
-            return f"API Error: {response.status_code} - {response.text}"
+        response.raise_for_status()
+        result = response.json()
+        return result['candidates'][0]['content']['parts'][0]['text']
+    except requests.exceptions.RequestException as e:
+        return f"Network Error: Could not reach Google AI. Please check your connection. Details: {e}"
     except Exception as e:
-        return f"Error: {e}"
+        return f"An unexpected error occurred: {e}"
 
 # --- Sidebar and Global Inputs ---
 st.markdown('<div class="main-header"><h1>🚀 My Little BFM</h1><p>Budget & Financial Management System</p></div>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("⚙️ Configuration")
-    uploaded_file = st.file_uploader("📊 Upload VLA Excel", type=['xlsx', 'xls'])
+    uploaded_file = st.file_uploader("📊 Upload VLA Excel (Optional)", type=['xlsx', 'xls'])
     st.subheader("👥 Personnel")
     branch_size = st.number_input("Branch Size", min_value=1, value=17)
     hourly_rate = st.number_input("Hourly Rate ($)", min_value=0.01, value=141.36, step=0.01)
@@ -81,7 +83,6 @@ with st.sidebar:
     fiscal_year = st.selectbox("Select Fiscal Year", [2024, 2025, 2026, 2027], index=1)
     st.subheader("🤖 AI Assistant")
     enable_ai_chat = st.checkbox("Enable BFM AI Assistant", value=True)
-    GOOGLE_API_KEY = st.text_input("Enter Your Google AI API Key", type="password")
 
 # --- Initialize Session State ---
 if 'chat_history' not in st.session_state: st.session_state.chat_history = []
@@ -91,76 +92,84 @@ if 'analysis_context' not in st.session_state: st.session_state.analysis_context
 col1, col2, col3 = st.columns(3)
 with col1:
     st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-    omn_balance = st.number_input("OMN Balance ($)", value=44053.0, key="omn_b")
+    omn_balance = st.number_input("OMN Balance ($)", value=44053.0, key="omn_b", label_visibility="collapsed")
 with col2:
     st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-    opn_balance = st.number_input("OPN Balance ($)", value=1947299.0, key="opn_b")
+    opn_balance = st.number_input("OPN Balance ($)", value=1947299.0, key="opn_b", label_visibility="collapsed")
 with col3:
     st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-    scn_balance = st.number_input("SCN Balance ($)", value=1148438.0, key="scn_b")
+    scn_balance = st.number_input("SCN Balance ($)", value=1148438.0, key="scn_b", label_visibility="collapsed")
 
-# --- Analysis Trigger and Display ---
-if st.button("🚀 Calculate Analysis", type="primary"):
+if st.button("🚀 Calculate Analysis", type="primary", use_container_width=True):
+    # --- Perform All Calculations on Button Click ---
     report_datetime = datetime.combine(report_date, datetime.min.time())
     monthly_personnel_cost = hourly_rate * 40 * 4.333 * branch_size
     total_balance = omn_balance + opn_balance + scn_balance
 
+    appropriations = {
+        'OMN': {'balance': omn_balance, 'expiry': get_appropriation_expiry_date('OMN', fiscal_year)},
+        'OPN': {'balance': opn_balance, 'expiry': get_appropriation_expiry_date('OPN', fiscal_year)},
+        'SCN': {'balance': scn_balance, 'expiry': get_appropriation_expiry_date('SCN', fiscal_year)}
+    }
+    for key, val in appropriations.items():
+        val['days_left'] = (val['expiry'] - report_datetime).days
+        val['work_days_left'] = count_working_days(report_datetime, val['expiry'])
+        val['is_urgent'] = is_expiring_soon(report_datetime, val['expiry'])
+
+    # --- Update AI Context in Session State ---
     st.session_state.analysis_context = {
-        "report_date": report_date.isoformat(),
-        "total_balance": total_balance,
+        "report_date": report_date.isoformat(), "total_balance": total_balance,
         "monthly_personnel_cost": monthly_personnel_cost,
-        "appropriations": {
-            "OMN": {"balance": omn_balance, "expiry": get_appropriation_expiry_date('OMN', fiscal_year).isoformat()},
-            "OPN": {"balance": opn_balance, "expiry": get_appropriation_expiry_date('OPN', fiscal_year).isoformat()},
-            "SCN": {"balance": scn_balance, "expiry": get_appropriation_expiry_date('SCN', fiscal_year).isoformat()},
-        }
+        "appropriations": {k: {**v, 'expiry': v['expiry'].isoformat()} for k, v in appropriations.items()}
     }
     
-    st.success("Analysis Context Updated for AI Assistant!")
+    st.success("Analysis Complete & AI Context Updated!")
     
-    # Display the analysis results as before
+    # --- Display Results ---
     st.markdown("### 📊 Financial Health Overview")
-    kpi_cols = st.columns(2)
+    kpi_cols = st.columns(3)
     kpi_cols[0].metric("💰 Total Balance", f"${total_balance:,.0f}")
-    if monthly_personnel_cost > 0:
-        kpi_cols[1].metric("⏳ Months of Burn", f"{(total_balance / monthly_personnel_cost):.1f} months")
-    else:
-        kpi_cols[1].metric("⏳ Months of Burn", "N/A")
-
+    months_of_burn = (total_balance / monthly_personnel_cost) if monthly_personnel_cost > 0 else 0
+    kpi_cols[1].metric("⏳ Total Branch Months of Burn", f"{months_of_burn:.1f} months")
+    kpi_cols[2].metric("👩‍💻 Monthly Cost", f"${monthly_personnel_cost:,.0f}")
+    
+    st.markdown("---")
+    
+    st.markdown("###  Appropriations Status")
+    card_cols = st.columns(3)
+    colors = {'OMN': '#c0392b', 'OPN': '#e67e22', 'SCN': '#27ae60'}
+    for i, (name, data) in enumerate(appropriations.items()):
+        with card_cols[i]:
+            card_class = "urgent-expiry" if data['is_urgent'] else ""
+            st.markdown(f'<div class="status-card {card_class}" style="background: linear-gradient(135deg, {colors[name]}, #2c3e50);">'\
+                        f'<h3>{name}</h3><h4>${data["balance"]:,.0f}</h4>'\
+                        f'<p>Expires: {data["expiry"].strftime("%b %d, %Y")}</p>'\
+                        f'<p>({data["days_left"]} days / {data["work_days_left"]} work days)</p></div>', unsafe_allow_html=True)
+    
 # --- Chatbot UI ---
 if enable_ai_chat:
     st.markdown("---")
     st.markdown("### 🤖 BFM AI Assistant")
-
-    if not GOOGLE_API_KEY:
-        st.warning("Please enter your Google AI API Key in the sidebar to enable the chatbot.")
+    if not GOOGLE_API_KEY.startswith("AIza"):
+        st.error("Invalid Google AI API Key. Please ensure the key is correct.")
     else:
         # Display chat history
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
-
         # Chat input
         if prompt := st.chat_input("Ask about your financial data..."):
-            # Add user message to history and display it
             st.session_state.chat_history.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            # Generate and display assistant response
+            with st.chat_message("user"): st.markdown(prompt)
+            
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
-                    # Use the analysis context from session state
                     context = st.session_state.analysis_context
                     if not context:
-                        st.warning("Please click 'Calculate Analysis' first to provide context to the AI.")
-                        response = "I don't have any data to analyze. Please click the 'Calculate Analysis' button above."
+                        response = "I don't have any data. Please click 'Calculate Analysis' first."
                     else:
                         response = call_google_ai_api(prompt, context, GOOGLE_API_KEY)
-                    
                     st.markdown(response)
-            
-            # Add assistant response to history
             st.session_state.chat_history.append({"role": "assistant", "content": response})
 
 st.markdown("---")
