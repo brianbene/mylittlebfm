@@ -29,6 +29,7 @@ st.markdown("""
 # --- Core Functions ---
 def get_federal_holidays(year):
     if year in [2024, 2025]:
+        # Federal Holidays for FY2025 (Oct 2024 - Sep 2025)
         return [
             datetime(2024, 10, 14), datetime(2024, 11, 11), datetime(2024, 11, 28),
             datetime(2024, 12, 25), datetime(2025, 1, 1), datetime(2025, 1, 20),
@@ -53,6 +54,10 @@ def get_appropriation_expiry_date(appn, fy):
     elif 'OPN' in appn.upper(): return datetime(fy + 1, 9, 30)
     elif 'SCN' in appn.upper(): return datetime(fy + 2, 9, 30)
     else: return datetime(fy, 9, 30)
+
+# FIXED: Added the missing function definition
+def is_expiring_soon(report_dt, expiry_dt, months=2):
+    return expiry_dt <= report_dt + timedelta(days=months * 30.5)
 
 def call_google_ai_api(user_message, context, api_key):
     try:
@@ -107,9 +112,9 @@ if st.button("🚀 Calculate Analysis", type="primary", use_container_width=True
     total_balance = omn_balance + opn_balance + scn_balance
 
     appropriations = {
-        'OMN': {'balance': omn_balance, 'expiry': get_appropriation_expiry_date('OMN', fiscal_year)},
-        'OPN': {'balance': opn_balance, 'expiry': get_appropriation_expiry_date('OPN', fiscal_year)},
-        'SCN': {'balance': scn_balance, 'expiry': get_appropriation_expiry_date('SCN', fiscal_year)}
+        'OMN': {'balance': omn_balance, 'lmt': {'L': omn_balance, 'M': 0, 'T': 0}, 'expiry': get_appropriation_expiry_date('OMN', fiscal_year)},
+        'OPN': {'balance': opn_balance, 'lmt': {'L': opn_balance, 'M': 0, 'T': 0}, 'expiry': get_appropriation_expiry_date('OPN', fiscal_year)},
+        'SCN': {'balance': scn_balance, 'lmt': {'L': scn_balance, 'M': 0, 'T': 0}, 'expiry': get_appropriation_expiry_date('SCN', fiscal_year)}
     }
     for key, val in appropriations.items():
         val['days_left'] = (val['expiry'] - report_datetime).days
@@ -145,19 +150,18 @@ if st.button("🚀 Calculate Analysis", type="primary", use_container_width=True
                         f'<h3>{name}</h3><h4>${data["balance"]:,.0f}</h4>'\
                         f'<p>Expires: {data["expiry"].strftime("%b %d, %Y")}</p>'\
                         f'<p>({data["days_left"]} days / {data["work_days_left"]} work days)</p></div>', unsafe_allow_html=True)
-    
+
 # --- Chatbot UI ---
 if enable_ai_chat:
     st.markdown("---")
     st.markdown("### 🤖 BFM AI Assistant")
+
     if not GOOGLE_API_KEY.startswith("AIza"):
         st.error("Invalid Google AI API Key. Please ensure the key is correct.")
     else:
-        # Display chat history
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
-        # Chat input
         if prompt := st.chat_input("Ask about your financial data..."):
             st.session_state.chat_history.append({"role": "user", "content": prompt})
             with st.chat_message("user"): st.markdown(prompt)
