@@ -1554,107 +1554,66 @@ if enable_personal_funding and uploaded_file:
     if personal_analysis:
         st.success(personal_message)
         
-        total_balance = personal_analysis['total_balance']
-        bl16200_balance = personal_analysis['bl16200_balance']
-        other_bl_balance = personal_analysis['other_bl_balance']
-        bl_code_count = personal_analysis['bl_code_count']
-        
-        # Overview Card
-        st.markdown(f"""
-        <div class="pm-analysis-card">
-            <h3>🎯 Your Complete Funding Portfolio (Excluding BL12200)</h3>
-            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 1rem; margin: 1rem 0; text-align: center;">
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total BL Codes</h4>
-                    <h3>{bl_code_count}</h3>
-                    <small>Different charging lines</small>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Total Value</h4>
-                    <h3>${total_balance:,.0f}</h3>
-                    <small>Across all BL codes</small>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>BL16200 (Your Branch)</h4>
-                    <h3>${bl16200_balance:,.0f}</h3>
-                    <small>{bl16200_balance/total_balance*100:.1f}% of total</small>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 10px;">
-                    <h4>Other BL Codes</h4>
-                    <h3>${other_bl_balance:,.0f}</h3>
-                    <small>{other_bl_balance/total_balance*100:.1f}% of total</small>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-        
         # Detailed BL Code Breakdown
-        st.markdown("#### 🏗️ All Your BL Codes (Charging Lines)")
-        st.info("💡 This shows EVERY BL code where you have funding allocated - your complete charging line portfolio!")
+        st.markdown("#### 🏗️ Other BL Codes Where You're the PM")
+        st.info("💡 These are all the OTHER departments where Benedicks/Benedicks-Denovellis is listed as PM (NOT including your BL16200 or managed BL12200)")
         
-        for i, (bl_code, bl_data) in enumerate(personal_analysis['bl_code_analysis'][:15]):  # Show top 15
-            is_bl16200 = bl_code == 'BL16200'
-            card_color = "#3498db" if is_bl16200 else "#e67e22"
-            category = "Your Branch" if is_bl16200 else "Other Department"
-            
-            # Create appropriation breakdown
-            appn_breakdown = ""
-            for appn, amount in bl_data['appropriations'].items():
-                if amount > 0:
-                    appn_breakdown += f'<span style="background: rgba(255,255,255,0.3); padding: 0.2rem 0.5rem; border-radius: 5px; margin-right: 0.3rem; font-size: 0.8em;">{appn}: ${amount:,.0f}</span>'
-            
-            # Create type breakdown
-            type_breakdown = ""
-            for type_code, amount in bl_data['types'].items():
-                if amount > 0:
-                    type_breakdown += f'<span style="background: rgba(255,255,255,0.2); padding: 0.2rem 0.5rem; border-radius: 5px; margin-right: 0.3rem; font-size: 0.8em;">{type_code}: ${amount:,.0f}</span>'
-            
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, {card_color}aa, {card_color}dd); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                <h5>#{i+1}: {bl_code} ({category})</h5>
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 0.5rem 0;">
-                    <div><strong>Total Balance:</strong> ${bl_data["total_balance"]:,.0f}</div>
-                    <div><strong>Projects:</strong> {bl_data["project_count"]}</div>
-                    <div><strong>% of Portfolio:</strong> {bl_data["total_balance"]/total_balance*100:.1f}%</div>
+        if bl_code_count > 0:
+            for i, (bl_code, bl_data) in enumerate(personal_analysis['bl_code_analysis']):
+                # Create appropriation breakdown
+                appn_breakdown = ""
+                for appn, amount in bl_data['appropriations'].items():
+                    if amount > 0:
+                        appn_breakdown += f'<span style="background: rgba(255,255,255,0.3); padding: 0.2rem 0.5rem; border-radius: 5px; margin-right: 0.3rem; font-size: 0.8em;">{appn}: ${amount:,.0f}</span>'
+                
+                # Create type breakdown
+                type_breakdown = ""
+                for type_code, amount in bl_data['types'].items():
+                    if amount > 0:
+                        type_breakdown += f'<span style="background: rgba(255,255,255,0.2); padding: 0.2rem 0.5rem; border-radius: 5px; margin-right: 0.3rem; font-size: 0.8em;">{type_code}: ${amount:,.0f}</span>'
+                
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #e67e22aa, #d35400dd); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
+                    <h5>#{i+1}: {bl_code} (Other Department)</h5>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 0.5rem 0;">
+                        <div><strong>Total Balance:</strong> ${bl_data["total_balance"]:,.0f}</div>
+                        <div><strong>Projects:</strong> {bl_data["project_count"]}</div>
+                        <div><strong>% of Other Funding:</strong> {bl_data["total_balance"]/total_balance*100:.1f}%</div>
+                    </div>
+                    <div style="margin: 0.5rem 0;">
+                        <strong>Appropriations:</strong><br>{appn_breakdown}
+                    </div>
+                    <div style="margin: 0.5rem 0;">
+                        <strong>Types:</strong><br>{type_breakdown}
+                    </div>
                 </div>
-                <div style="margin: 0.5rem 0;">
-                    <strong>Appropriations:</strong><br>{appn_breakdown}
-                </div>
-                <div style="margin: 0.5rem 0;">
-                    <strong>Types:</strong><br>{type_breakdown}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+        else:
+            st.warning("No other BL codes found where you are the PM (excluding BL16200 and BL12200)")
         
         # Strategic Analysis
-        st.markdown("#### 🎯 Strategic Insights")
-        
-        non_bl16200_codes = [bl for bl, _ in personal_analysis['bl_code_analysis'] if bl != 'BL16200']
-        
-        if len(non_bl16200_codes) > 0:
-            st.success(f"📊 **Portfolio Diversification**: You have funding in {len(non_bl16200_codes)} other departments beyond your BL16200 branch")
+        if bl_code_count > 0:
+            st.markdown("#### 🎯 Strategic Insights")
+            st.success(f"📊 **Other Department Involvement**: You are PM for {bl_code_count} other departments beyond BL16200/BL12200")
             
-            # Show top 3 other BL codes
-            top_other_bl = [(bl, data) for bl, data in personal_analysis['bl_code_analysis'] if bl != 'BL16200'][:3]
+            # Show summary
+            st.write(f"**Total funding in other departments:** ${total_balance:,.0f}")
+            st.write(f"**Average per BL code:** ${total_balance/bl_code_count:,.0f}")
             
-            if top_other_bl:
-                st.markdown("**Top 3 Other Departments:**")
-                for bl, data in top_other_bl:
-                    st.write(f"• **{bl}**: ${data['total_balance']:,.0f} across {data['project_count']} projects")
-        
+            # Show top BL code
+            if personal_analysis['bl_code_analysis']:
+                top_bl, top_data = personal_analysis['bl_code_analysis'][0]
+                st.write(f"**Largest other department:** {top_bl} with ${top_data['total_balance']:,.0f}")
+
         # Individual Projects List
         if personal_projects:
-            st.markdown("#### 📋 All Your Projects")
+            st.markdown("#### 📋 Projects in Other Departments")
             for i, project in enumerate(personal_projects[:20]):  # Show top 20 projects
-                is_bl16200 = project['BL_Code'] == 'BL16200'
-                badge_color = "#3498db" if is_bl16200 else "#e67e22"
-                badge_text = "Your Branch" if is_bl16200 else "Other Dept"
-                
                 st.markdown(f"""
                 <div style="background: white; border: 1px solid #ddd; padding: 1rem; border-radius: 8px; margin: 0.3rem 0;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <h6 style="margin: 0; color: #333;">#{i+1}: {project["BL_Code"]} - {project["CO_Number"]}</h6>
-                        <span style="background: {badge_color}; color: white; padding: 0.2rem 0.5rem; border-radius: 5px; font-size: 0.8em;">{badge_text}</span>
+                        <span style="background: #e67e22; color: white; padding: 0.2rem 0.5rem; border-radius: 5px; font-size: 0.8em;">Other Dept</span>
                     </div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 0.5rem 0; font-size: 0.9em; color: #666;">
                         <div><strong>APPN:</strong> {project["APPN"]}</div>
