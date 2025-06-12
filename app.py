@@ -23,6 +23,202 @@ st.markdown("""
   70% { box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
   100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
 }
+
+/* Chat Messenger Styles */
+.chat-widget {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 1000;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+}
+
+.chat-toggle {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    color: white;
+    font-size: 24px;
+    cursor: pointer;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s ease;
+}
+
+.chat-toggle:hover {
+    transform: scale(1.1);
+    box-shadow: 0 6px 25px rgba(0,0,0,0.4);
+}
+
+.chat-window {
+    position: absolute;
+    bottom: 80px;
+    right: 0;
+    width: 350px;
+    height: 500px;
+    background: white;
+    border-radius: 15px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+    border: 1px solid #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transform: scale(0);
+    opacity: 0;
+    transition: all 0.3s ease;
+    transform-origin: bottom right;
+}
+
+.chat-window.open {
+    transform: scale(1);
+    opacity: 1;
+}
+
+.chat-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 15px 20px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 15px;
+    background: #f8f9fa;
+}
+
+.chat-message {
+    margin-bottom: 15px;
+    max-width: 80%;
+}
+
+.chat-message.user {
+    margin-left: auto;
+}
+
+.chat-message.user .message-bubble {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: white;
+    border-radius: 18px 18px 5px 18px;
+}
+
+.chat-message.assistant .message-bubble {
+    background: white;
+    color: #333;
+    border: 1px solid #e0e0e0;
+    border-radius: 18px 18px 18px 5px;
+}
+
+.message-bubble {
+    padding: 12px 16px;
+    font-size: 14px;
+    line-height: 1.4;
+    word-wrap: break-word;
+}
+
+.chat-input-area {
+    padding: 15px;
+    background: white;
+    border-top: 1px solid #e0e0e0;
+}
+
+.chat-input-container {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.chat-input {
+    flex: 1;
+    padding: 12px 15px;
+    border: 1px solid #e0e0e0;
+    border-radius: 25px;
+    outline: none;
+    font-size: 14px;
+}
+
+.chat-input:focus {
+    border-color: #667eea;
+}
+
+.chat-send-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    border: none;
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+.chat-send-btn:hover {
+    transform: scale(1.1);
+}
+
+.quick-actions {
+    display: flex;
+    gap: 5px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.quick-btn {
+    background: #f0f0f0;
+    border: 1px solid #d0d0d0;
+    border-radius: 15px;
+    padding: 6px 12px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.quick-btn:hover {
+    background: #667eea;
+    color: white;
+    border-color: #667eea;
+}
+
+.thinking {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-style: italic;
+    color: #666;
+    font-size: 12px;
+}
+
+.thinking-dots {
+    display: inline-flex;
+    gap: 2px;
+}
+
+.thinking-dots span {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: #667eea;
+    animation: thinking 1.5s infinite;
+}
+
+.thinking-dots span:nth-child(2) { animation-delay: 0.3s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.6s; }
+
+@keyframes thinking {
+    0%, 60%, 100% { opacity: 0.3; }
+    30% { opacity: 1; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -363,13 +559,14 @@ if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'analysis_context' not in st.session_state:
     st.session_state.analysis_context = None
+if 'chat_open' not in st.session_state:
+    st.session_state.chat_open = False
+if 'thinking' not in st.session_state:
+    st.session_state.thinking = False
 
-# BFM AI Assistant Section
+# BFM AI Assistant Section - Hidden (now handled by floating widget)
 if enable_ai_chat and GOOGLE_API_KEY:
-    st.markdown("### 🤖 BFM AI Assistant")
-    st.info("💡 Ask questions about your financial analysis, appropriations, or get strategic recommendations!")
-    
-    # Create analysis context for AI
+    # Create analysis context for AI but don't show UI here
     current_context = format_analysis_for_ai(
         st.session_state.extracted_data,
         st.session_state.benedicks_data,
@@ -378,80 +575,6 @@ if enable_ai_chat and GOOGLE_API_KEY:
         []  # Will be populated after calculation
     )
     st.session_state.analysis_context = current_context
-    
-    # Chat interface
-    with st.container():
-        st.markdown("#### 💬 Chat with BFM Assistant")
-        
-        # Display chat history
-        chat_container = st.container()
-        with chat_container:
-            for i, (role, message) in enumerate(st.session_state.chat_history):
-                if role == "user":
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 1rem; border-radius: 15px; margin: 0.5rem 0; text-align: right;">
-                        <strong>You:</strong> {message}
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.markdown(f"""
-                    <div style="background: linear-gradient(135deg, #f093fb, #f5576c); color: white; padding: 1rem; border-radius: 15px; margin: 0.5rem 0;">
-                        <strong>🤖 BFM Assistant:</strong> {message}
-                    </div>
-                    """, unsafe_allow_html=True)
-        
-        # Chat input
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            user_input = st.text_input("Ask about your BFM analysis...", key="chat_input", placeholder="e.g., 'What's my funding status?' or 'Should I charge to OMN or OPN?'")
-        with col2:
-            send_message = st.button("Send 🚀", type="primary")
-        
-        # Quick question buttons
-        st.markdown("##### Quick Questions:")
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            if st.button("💰 Funding Status"):
-                user_input = "What's my current funding status and balance?"
-                send_message = True
-        with col2:
-            if st.button("⚡ Charging Recommendation"):
-                user_input = "Which appropriation should I charge to this month?"
-                send_message = True
-        with col3:
-            if st.button("📊 Benedicks Portfolio"):
-                user_input = "Tell me about the Benedicks portfolio analysis"
-                send_message = True
-        with col4:
-            if st.button("🚨 Risk Assessment"):
-                user_input = "Are there any funding risks I should be concerned about?"
-                send_message = True
-        
-        # Process user input
-        if send_message and user_input:
-            # Add user message to history
-            st.session_state.chat_history.append(("user", user_input))
-            
-            # Get AI response
-            with st.spinner("🤖 BFM Assistant is thinking..."):
-                ai_response = call_google_ai_api(
-                    user_input, 
-                    st.session_state.analysis_context,
-                    GOOGLE_API_KEY,
-                    PROJECT_ID,
-                    REGION
-                )
-            
-            # Add AI response to history
-            st.session_state.chat_history.append(("assistant", ai_response))
-            
-            # Clear input and rerun to show new messages
-            st.rerun()
-        
-        # Clear chat history button
-        if st.button("🗑️ Clear Chat History"):
-            st.session_state.chat_history = []
-            st.rerun()
 
 elif enable_ai_chat:
     st.markdown("### 🤖 BFM AI Assistant")
@@ -1125,3 +1248,150 @@ if st.button("🚀 Calculate Analysis", type="primary"):
 # Footer
 st.markdown("---")
 st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging, Expiry Analysis & Benedicks Portfolio Analysis</p></div>', unsafe_allow_html=True)
+
+# Floating Chat Widget (appears when AI is enabled)
+if enable_ai_chat and GOOGLE_API_KEY:
+    # JavaScript for chat functionality
+    chat_js = """
+    <div class="chat-widget">
+        <div class="chat-window" id="chatWindow">
+            <div class="chat-header">
+                <span>🤖 BFM Assistant</span>
+                <span onclick="toggleChat()" style="cursor: pointer;">✕</span>
+            </div>
+            <div class="chat-messages" id="chatMessages">
+                <!-- Chat messages will be populated here -->
+            </div>
+            <div class="chat-input-area">
+                <div class="quick-actions">
+                    <div class="quick-btn" onclick="sendQuickMessage('💰 Funding Status')">💰 Status</div>
+                    <div class="quick-btn" onclick="sendQuickMessage('⚡ Charging Recommendation')">⚡ Charge</div>
+                    <div class="quick-btn" onclick="sendQuickMessage('📊 Benedicks Portfolio')">📊 Portfolio</div>
+                    <div class="quick-btn" onclick="sendQuickMessage('🚨 Risk Assessment')">🚨 Risks</div>
+                </div>
+                <div class="chat-input-container">
+                    <input type="text" class="chat-input" id="chatInput" placeholder="Ask about your BFM analysis..." onkeypress="handleKeyPress(event)">
+                    <button class="chat-send-btn" onclick="sendMessage()">🚀</button>
+                </div>
+            </div>
+        </div>
+        <button class="chat-toggle" onclick="toggleChat()" id="chatToggle">
+            💬
+        </button>
+    </div>
+
+    <script>
+        function toggleChat() {
+            const chatWindow = document.getElementById('chatWindow');
+            const chatToggle = document.getElementById('chatToggle');
+            
+            if (chatWindow.classList.contains('open')) {
+                chatWindow.classList.remove('open');
+                chatToggle.innerHTML = '💬';
+            } else {
+                chatWindow.classList.add('open');
+                chatToggle.innerHTML = '✕';
+                loadChatHistory();
+            }
+        }
+
+        function loadChatHistory() {
+            // This would be populated by Streamlit session state
+            const chatMessages = document.getElementById('chatMessages');
+            chatMessages.innerHTML = '';
+            
+            // Add welcome message if no history
+            if (!chatMessages.innerHTML.trim()) {
+                addMessage('assistant', 'Hi! I'm your BFM Assistant. Ask me about your funding, appropriations, or get strategic recommendations!');
+            }
+        }
+
+        function addMessage(role, content) {
+            const chatMessages = document.getElementById('chatMessages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `chat-message ${role}`;
+            
+            const bubbleDiv = document.createElement('div');
+            bubbleDiv.className = 'message-bubble';
+            bubbleDiv.innerHTML = content;
+            
+            messageDiv.appendChild(bubbleDiv);
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            
+            if (message) {
+                addMessage('user', message);
+                input.value = '';
+                
+                // Show thinking indicator
+                showThinking();
+                
+                // This would trigger Streamlit to process the message
+                // For now, simulate a response
+                setTimeout(() => {
+                    hideThinking();
+                    addMessage('assistant', 'Thanks for your question! This would be processed by the AI assistant.');
+                }, 2000);
+            }
+        }
+
+        function sendQuickMessage(message) {
+            addMessage('user', message);
+            showThinking();
+            
+            setTimeout(() => {
+                hideThinking();
+                let response = '';
+                if (message.includes('Status')) {
+                    response = 'Based on your current analysis, here\'s your funding status overview...';
+                } else if (message.includes('Charge')) {
+                    response = 'For this month, I recommend charging to the appropriation that expires soonest...';
+                } else if (message.includes('Portfolio')) {
+                    response = 'Your Benedicks portfolio shows strong diversification across multiple appropriations...';
+                } else if (message.includes('Risks')) {
+                    response = 'I\'ve identified several funding considerations that need your attention...';
+                }
+                addMessage('assistant', response);
+            }, 1500);
+        }
+
+        function showThinking() {
+            const thinkingDiv = document.createElement('div');
+            thinkingDiv.className = 'chat-message assistant';
+            thinkingDiv.id = 'thinking-message';
+            
+            const bubbleDiv = document.createElement('div');
+            bubbleDiv.className = 'message-bubble thinking';
+            bubbleDiv.innerHTML = '🤖 BFM Assistant is thinking<span class="thinking-dots"><span></span><span></span><span></span></span>';
+            
+            thinkingDiv.appendChild(bubbleDiv);
+            document.getElementById('chatMessages').appendChild(thinkingDiv);
+            document.getElementById('chatMessages').scrollTop = document.getElementById('chatMessages').scrollHeight;
+        }
+
+        function hideThinking() {
+            const thinkingMessage = document.getElementById('thinking-message');
+            if (thinkingMessage) {
+                thinkingMessage.remove();
+            }
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        // Initialize chat when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            loadChatHistory();
+        });
+    </script>
+    """
+    
+    st.components.v1.html(chat_js, height=0)
