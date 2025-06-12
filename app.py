@@ -4,10 +4,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
 import io
+import json
+import requests
 
 st.set_page_config(page_title="My Little BFM", page_icon="💰", layout="wide")
 
-# CSS
+# CSS for main page and chatbot
 st.markdown("""
 <style>
 .main-header {background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2rem; border-radius: 15px; color: white; text-align: center; margin-bottom: 2rem;}
@@ -24,8 +26,7 @@ st.markdown("""
 
 # --- Function Definitions ---
 def get_federal_holidays(year):
-    if year == 2024 or year == 2025:
-        # Federal Holidays for FY2025 (Oct 2024 - Sep 2025)
+    if year in [2024, 2025]:
         return [
             datetime(2024, 10, 14), datetime(2024, 11, 11), datetime(2024, 11, 28),
             datetime(2024, 12, 25), datetime(2025, 1, 1), datetime(2025, 1, 20),
@@ -35,13 +36,8 @@ def get_federal_holidays(year):
     return []
 
 def count_working_days(start_date, end_date):
-    if start_date > end_date:
-        return 0
-    
-    holidays_start_year = get_federal_holidays(start_date.year)
-    holidays_end_year = get_federal_holidays(end_date.year)
-    holidays = set(holidays_start_year + holidays_end_year)
-    
+    if start_date > end_date: return 0
+    holidays = set(get_federal_holidays(start_date.year) + get_federal_holidays(end_date.year))
     working_days = 0
     current_date = start_date
     while current_date <= end_date:
@@ -51,131 +47,121 @@ def count_working_days(start_date, end_date):
     return working_days
 
 def get_appropriation_expiry_date(appn, fy):
-    if 'OMN' in appn.upper():
-        return datetime(fy, 9, 30)
-    elif 'OPN' in appn.upper():
-        return datetime(fy + 1, 9, 30)
-    elif 'SCN' in appn.upper():
-        return datetime(fy + 2, 9, 30)
-    else:
-        return datetime(fy, 9, 30)
+    if 'OMN' in appn.upper(): return datetime(fy, 9, 30)
+    elif 'OPN' in appn.upper(): return datetime(fy + 1, 9, 30)
+    elif 'SCN' in appn.upper(): return datetime(fy + 2, 9, 30)
+    else: return datetime(fy, 9, 30)
 
-def is_expiring_soon(report_dt, expiry_dt, months=2):
-    return expiry_dt <= report_dt + timedelta(days=months * 30.5)
+def call_google_ai_api(user_message, context, api_key):
+    try:
+        system_prompt = f"""You are a helpful Budget and Financial Management (BFM) AI Assistant. Analyze the provided financial context and the user's question to give clear, actionable advice. Today's date is {date.today().strftime('%B %d, %Y')}. The context is: {json.dumps(context, indent=2)}"""
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        headers = {'Content-Type': 'application/json'}
+        data = {"contents": [{"parts": [{"text": f"{system_prompt}\n\nUser Question: {user_message}"}]}]}
+        response = requests.post(url, headers=headers, json=data, timeout=45)
+        if response.status_code == 200:
+            result = response.json()
+            return result['candidates'][0]['content']['parts'][0]['text']
+        else:
+            return f"API Error: {response.status_code} - {response.text}"
+    except Exception as e:
+        return f"Error: {e}"
 
-# --- Sidebar and Input Widgets ---
+# --- Sidebar and Global Inputs ---
 st.markdown('<div class="main-header"><h1>🚀 My Little BFM</h1><p>Budget & Financial Management System</p></div>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("⚙️ Configuration")
     uploaded_file = st.file_uploader("📊 Upload VLA Excel", type=['xlsx', 'xls'])
-    
     st.subheader("👥 Personnel")
     branch_size = st.number_input("Branch Size", min_value=1, value=17)
     hourly_rate = st.number_input("Hourly Rate ($)", min_value=0.01, value=141.36, step=0.01)
-    hours_per_week = st.number_input("Hours/Week", min_value=1, max_value=80, value=40)
-    
     st.subheader("📅 Dates & Fiscal Year")
     report_date = st.date_input("Report Date", value=date.today())
     fiscal_year = st.selectbox("Select Fiscal Year", [2024, 2025, 2026, 2027], index=1)
+    st.subheader("🤖 AI Assistant")
+    enable_ai_chat = st.checkbox("Enable BFM AI Assistant", value=True)
+    GOOGLE_API_KEY = st.text_input("Enter Your Google AI API Key", type="password")
 
-# --- Data Input Fields ---
+# --- Initialize Session State ---
+if 'chat_history' not in st.session_state: st.session_state.chat_history = []
+if 'analysis_context' not in st.session_state: st.session_state.analysis_context = {}
+
+# --- Main Page UI ---
 col1, col2, col3 = st.columns(3)
 with col1:
     st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-    omn_balance = st.number_input("OMN Balance ($)", value=44053.0)
-    omn_l = st.number_input("OMN Labor ($)", value=44053.0)
-    omn_m = st.number_input("OMN Material ($)", value=0.0)
-    omn_t = st.number_input("OMN Travel ($)", value=0.0)
+    omn_balance = st.number_input("OMN Balance ($)", value=44053.0, key="omn_b")
 with col2:
     st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-    opn_balance = st.number_input("OPN Balance ($)", value=1947299.0)
-    opn_l = st.number_input("OPN Labor ($)", value=1947299.0)
-    opn_m = st.number_input("OPN Material ($)", value=0.0)
-    opn_t = st.number_input("OPN Travel ($)", value=0.0)
+    opn_balance = st.number_input("OPN Balance ($)", value=1947299.0, key="opn_b")
 with col3:
     st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-    scn_balance = st.number_input("SCN Balance ($)", value=1148438.0)
-    scn_l = st.number_input("SCN Labor ($)", value=813595.0)
-    scn_m = st.number_input("SCN Material ($)", value=334843.0)
-    scn_t = st.number_input("SCN Travel ($)", value=0.0)
+    scn_balance = st.number_input("SCN Balance ($)", value=1148438.0, key="scn_b")
 
 # --- Analysis Trigger and Display ---
 if st.button("🚀 Calculate Analysis", type="primary"):
-    # ALL CALCULATIONS AND DISPLAY LOGIC NOW LIVE INSIDE THE BUTTON'S 'IF' BLOCK
-    
     report_datetime = datetime.combine(report_date, datetime.min.time())
-    
-    # Expiry Dates
-    omn_expiry = get_appropriation_expiry_date('OMN', fiscal_year)
-    opn_expiry = get_appropriation_expiry_date('OPN', fiscal_year)
-    scn_expiry = get_appropriation_expiry_date('SCN', fiscal_year)
-
-    # Core Financial Metrics
-    monthly_personnel_cost = hourly_rate * hours_per_week * 4.333 * branch_size
+    monthly_personnel_cost = hourly_rate * 40 * 4.333 * branch_size
     total_balance = omn_balance + opn_balance + scn_balance
 
-    # Days Left Calculation
-    days_to_omn_expiry = (omn_expiry - report_datetime).days
-    days_to_opn_expiry = (opn_expiry - report_datetime).days
-    days_to_scn_expiry = (scn_expiry - report_datetime).days
+    st.session_state.analysis_context = {
+        "report_date": report_date.isoformat(),
+        "total_balance": total_balance,
+        "monthly_personnel_cost": monthly_personnel_cost,
+        "appropriations": {
+            "OMN": {"balance": omn_balance, "expiry": get_appropriation_expiry_date('OMN', fiscal_year).isoformat()},
+            "OPN": {"balance": opn_balance, "expiry": get_appropriation_expiry_date('OPN', fiscal_year).isoformat()},
+            "SCN": {"balance": scn_balance, "expiry": get_appropriation_expiry_date('SCN', fiscal_year).isoformat()},
+        }
+    }
     
-    # Working Days Calculation
-    working_days_omn = count_working_days(report_datetime, omn_expiry)
-    working_days_opn = count_working_days(report_datetime, opn_expiry)
-    working_days_scn = count_working_days(report_datetime, scn_expiry)
-
-    # --- Display Results ---
+    st.success("Analysis Context Updated for AI Assistant!")
+    
+    # Display the analysis results as before
     st.markdown("### 📊 Financial Health Overview")
-    kpi_cols = st.columns(3)
+    kpi_cols = st.columns(2)
     kpi_cols[0].metric("💰 Total Balance", f"${total_balance:,.0f}")
-    
-    # Guard against division by zero
     if monthly_personnel_cost > 0:
-        months_of_burn = total_balance / monthly_personnel_cost
-        kpi_cols[1].metric("⏳ Months of Burn", f"{months_of_burn:.1f} months")
+        kpi_cols[1].metric("⏳ Months of Burn", f"{(total_balance / monthly_personnel_cost):.1f} months")
     else:
         kpi_cols[1].metric("⏳ Months of Burn", "N/A")
-        
-    kpi_cols[2].metric("👩‍💻 Monthly Cost", f"${monthly_personnel_cost:,.0f}")
-    
+
+# --- Chatbot UI ---
+if enable_ai_chat:
     st.markdown("---")
-    
-    # Appropriation Status Cards
-    st.markdown("###  Appropriations Status")
-    card_cols = st.columns(3)
-    
-    with card_cols[0]:
-        st.markdown(f'<div class="status-card" style="background: linear-gradient(135deg, #e74c3c, #c0392b);"><h3>OMN</h3><h4>${omn_balance:,.0f}</h4><p>Expires: {omn_expiry.strftime("%b %d, %Y")}</p><p>({days_to_omn_expiry} days / {working_days_omn} work days)</p></div>', unsafe_allow_html=True)
-    with card_cols[1]:
-        st.markdown(f'<div class="status-card" style="background: linear-gradient(135deg, #f39c12, #e67e22);"><h3>OPN</h3><h4>${opn_balance:,.0f}</h4><p>Expires: {opn_expiry.strftime("%b %d, %Y")}</p><p>({days_to_opn_expiry} days / {working_days_opn} work days)</p></div>', unsafe_allow_html=True)
-    with card_cols[2]:
-        st.markdown(f'<div class="status-card" style="background: linear-gradient(135deg, #27ae60, #2ecc71);"><h3>SCN</h3><h4>${scn_balance:,.0f}</h4><p>Expires: {scn_expiry.strftime("%b %d, %Y")}</p><p>({days_to_scn_expiry} days / {working_days_scn} work days)</p></div>', unsafe_allow_html=True)
+    st.markdown("### 🤖 BFM AI Assistant")
 
-    st.markdown("---")
+    if not GOOGLE_API_KEY:
+        st.warning("Please enter your Google AI API Key in the sidebar to enable the chatbot.")
+    else:
+        # Display chat history
+        for message in st.session_state.chat_history:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
 
-    # Charting
-    st.markdown("### 📈 Visualizations")
-    chart_cols = st.columns(2)
-    
-    with chart_cols[0]:
-        fig_balance = px.bar(
-            x=['OMN', 'OPN', 'SCN'], 
-            y=[omn_balance, opn_balance, scn_balance],
-            title="Balance by Appropriation",
-            labels={'x': 'Appropriation', 'y': 'Balance'},
-            color=['OMN', 'OPN', 'SCN'],
-            color_discrete_map={'OMN': '#e74c3c', 'OPN': '#f39c12', 'SCN': '#27ae60'}
-        )
-        st.plotly_chart(fig_balance, use_container_width=True)
+        # Chat input
+        if prompt := st.chat_input("Ask about your financial data..."):
+            # Add user message to history and display it
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
-    with chart_cols[1]:
-        fig_lmt = go.Figure()
-        fig_lmt.add_trace(go.Bar(name='Labor', x=['OMN', 'OPN', 'SCN'], y=[omn_l, opn_l, scn_l], marker_color='#3498db'))
-        fig_lmt.add_trace(go.Bar(name='Material', x=['OMN', 'OPN', 'SCN'], y=[omn_m, opn_m, scn_m], marker_color='#e74c3c'))
-        fig_lmt.add_trace(go.Bar(name='Travel', x=['OMN', 'OPN', 'SCN'], y=[omn_t, opn_t, scn_t], marker_color='#f39c12'))
-        fig_lmt.update_layout(title="L/M/T Breakdown", barmode='stack')
-        st.plotly_chart(fig_lmt, use_container_width=True)
+            # Generate and display assistant response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    # Use the analysis context from session state
+                    context = st.session_state.analysis_context
+                    if not context:
+                        st.warning("Please click 'Calculate Analysis' first to provide context to the AI.")
+                        response = "I don't have any data to analyze. Please click the 'Calculate Analysis' button above."
+                    else:
+                        response = call_google_ai_api(prompt, context, GOOGLE_API_KEY)
+                    
+                    st.markdown(response)
+            
+            # Add assistant response to history
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
 
 st.markdown("---")
 st.markdown('<div style="text-align: center; opacity: 0.7;"><p>My Little BFM</p></div>', unsafe_allow_html=True)
