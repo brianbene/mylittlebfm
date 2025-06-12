@@ -69,7 +69,6 @@ st.markdown("""
 
 def get_federal_holidays(year):
     """Returns a list of federal holidays for a given year."""
-    # Using the holidays identified in our previous analysis for 2025
     if year == 2025:
         return [
             datetime(2025, 1, 1), datetime(2025, 1, 20), datetime(2025, 2, 17),
@@ -77,7 +76,6 @@ def get_federal_holidays(year):
             datetime(2025, 9, 1), datetime(2025, 10, 13), datetime(2025, 11, 11),
             datetime(2025, 11, 27), datetime(2025, 12, 25)
         ]
-    # Add other years as needed
     return []
 
 def extract_data_for_ai_analysis(csv_file, col_map):
@@ -88,32 +86,20 @@ def extract_data_for_ai_analysis(csv_file, col_map):
     if not csv_file:
         return None
     try:
-        # Read the uploaded CSV file
-        df = pd.read_csv(csv_file, header=1) # Assuming header is on the second row
+        df = pd.read_csv(csv_file, header=1)
         df.columns = [str(c).strip() for c in df.columns]
-
-        # Define the branches of interest
         target_branches = ['BL12200', 'BL16200']
-
-        # Check if necessary columns exist
         required_cols = [col_map['work_ctr']]
         if not all(col in df.columns for col in required_cols):
             st.error(f"The required column '{col_map['work_ctr']}' was not found in the uploaded file.")
             return None
-
-        # Filter for the target branches
         mask = df[col_map['work_ctr']].astype(str).str.contains('|'.join(target_branches), na=False)
         relevant_data = df[mask]
-
         if relevant_data.empty:
             st.warning(f"No data found for branches {', '.join(target_branches)}.")
             return None
-
-        # Select all available columns for the AI to get full context
-        # Convert to a more structured format for the AI prompt
         analysis_data = relevant_data.to_dict(orient='records')
         return analysis_data
-
     except Exception as e:
         st.error(f"Error processing the Consolidated Data file: {e}")
         return None
@@ -121,9 +107,7 @@ def extract_data_for_ai_analysis(csv_file, col_map):
 
 def prompt_for_gemini(data_for_ai):
     """Creates a detailed, specific prompt for the Gemini API."""
-    # Convert the Python list of dictionaries to a JSON string for cleaner prompting
     data_json = json.dumps(data_for_ai, indent=2)
-
     prompt = f"""
     As an expert financial analyst, your name is Gemini. You are tasked with providing a detailed financial evaluation for Brian Benedicks, a Project Manager.
 
@@ -159,10 +143,13 @@ def prompt_for_gemini(data_for_ai):
 def ask_gemini(prompt):
     """Sends the request to the Gemini API and returns the response."""
     if not GOOGLE_API_KEY:
-        st.error("Google API Key is not configured. Please add it to the script.")
+        st.error("Google API Key is not configured.")
         return None
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GOOGLE_API_KEY}"
+    # ---FIXED: Updated the model from 'gemini-pro' to 'gemini-1.5-pro-latest' to resolve 404 error ---
+    model_name = 'gemini-1.5-pro-latest'
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GOOGLE_API_KEY}"
+    
     headers = {'Content-Type': 'application/json'}
     data = {"contents": [{"parts": [{"text": prompt}]}]}
 
@@ -174,21 +161,23 @@ def ask_gemini(prompt):
             return candidates[0]['content']['parts'][0]['text']
         else:
             st.error("No content received from Gemini. The response may be empty or blocked.")
-            st.json(response.json()) # Show the full API response for debugging
+            st.json(response.json())
             return None
-    except requests.exceptions.RequestException as e:
-        st.error(f"Failed to get response from Gemini API: {e}")
+    except requests.exceptions.HTTPError as http_err:
+        st.error(f"HTTP error occurred: {http_err}")
+        st.error(f"Full response: {response.text}")
+        # Add a note for the user to check their API key's configuration
+        st.warning("If this is a 403 Forbidden error, please ensure the 'Generative Language API' is enabled for your project in the Google Cloud Console.")
+        return None
+    except Exception as e:
+        st.error(f"An unexpected error occurred: {e}")
         return None
 
 
 # --- Streamlit UI ---
-
 st.markdown("<h1 class='main-header'>BFM Financial Performance Analysis</h1>", unsafe_allow_html=True)
 
-# --- File Uploader and Column Mapping ---
 st.sidebar.header("⚙️ Configuration")
-
-# Changed to accept CSV and specifically ask for the Consolidated Data file
 uploaded_file = st.sidebar.file_uploader(
     "Upload 'Consolidated Data.csv'",
     type=['csv']
@@ -196,8 +185,6 @@ uploaded_file = st.sidebar.file_uploader(
 
 st.sidebar.subheader("Advanced: Column Mapping")
 st.sidebar.info("Adjust these if your CSV file has different column names.")
-
-# Updated default values to match the provided CSV
 col_map = {
     'work_ctr': st.sidebar.text_input("Work Center Column", "Work Ctr"),
     'pm': st.sidebar.text_input("PM Column", "PM"),
@@ -213,7 +200,6 @@ col_map = {
     'work_comp_date': st.sidebar.text_input("Completion Date Column", "Work Comp. Date")
 }
 
-# --- Main Analysis Section ---
 if uploaded_file:
     st.header("📊 AI-Powered Financial Evaluation")
     
@@ -225,15 +211,13 @@ if uploaded_file:
             st.success("Data extracted successfully. Asking Gemini for insights...")
             with st.spinner("🤖 Gemini is analyzing the data... This may take a moment."):
                 prompt = prompt_for_gemini(data_for_ai)
-                # st.text_area("Generated Prompt for Gemini (for debugging):", prompt, height=300) # Uncomment to see the prompt
                 ai_response = ask_gemini(prompt)
 
             if ai_response:
                 st.markdown(ai_response)
             else:
-                st.error("Could not retrieve analysis from AI.")
+                st.error("Could not retrieve analysis from AI. See error details above.")
         else:
             st.error("Could not extract the necessary data. Please check the file and column mappings.")
-
 else:
     st.info("👋 Welcome! Please upload your 'Consolidated Data.csv' file using the sidebar to begin.")
