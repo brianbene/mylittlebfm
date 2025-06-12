@@ -57,47 +57,80 @@ def get_appropriation_expiry_date(appn, fy):
 def is_expiring_soon(report_dt, expiry_dt, months=2):
     return expiry_dt <= report_dt + timedelta(days=months * 30.5)
 
-# MODIFIED: Function now accepts a sheet_name parameter
+# ROBUST FUNCTION: Now searches for columns by name instead of position
 def get_top_cos_for_bl(file, target_bl, sheet_name):
     if not file: return []
     try:
         df = pd.read_excel(file, sheet_name=sheet_name, header=1)
-        bl_data = df[df.iloc[:, 7].astype(str).str.contains(target_bl, na=False)]
+        df.columns = df.columns.str.strip() # Clean up column names
+
+        # Define expected column names
+        work_ctr_col = 'Work Ctr'
+        balance_col = 'Avail Proj Auth'
+        appn_col = 'APPN'
+        co_col = 'Chargeable Object'
+
+        # Check if required columns exist
+        required_cols = [work_ctr_col, balance_col, appn_col, co_col]
+        if not all(col in df.columns for col in required_cols):
+            st.error(f"Missing required columns in sheet '{sheet_name}'. Expected: {required_cols}")
+            return []
+
+        bl_data = df[df[work_ctr_col].astype(str).str.contains(target_bl, na=False)]
         if bl_data.empty: return []
         
         chargeable_objects = []
         for _, row in bl_data.iterrows():
             try:
-                balance = float(str(row.iloc[16]).replace('$', '').replace(',', '').strip())
+                balance = float(str(row[balance_col]).replace('$', '').replace(',', '').strip())
                 if balance > 0:
                     chargeable_objects.append({
-                        "CO_Number": str(row.iloc[6]), "APPN": str(row.iloc[2]), "Balance": balance
+                        "CO_Number": str(row[co_col]), "APPN": str(row[appn_col]), "Balance": balance
                     })
-            except (ValueError, TypeError, IndexError): continue
+            except (ValueError, TypeError): continue
         return sorted(chargeable_objects, key=lambda x: x['Balance'], reverse=True)[:5]
-    except Exception: return []
+    except Exception as e:
+        st.error(f"Error processing sheet '{sheet_name}': {e}")
+        return []
 
-# MODIFIED: Function now accepts a sheet_name parameter
+# ROBUST FUNCTION: Now searches for columns by name
 def extract_benedicks_data_for_ai(file, sheet_name):
     if not file: return []
     try:
         df = pd.read_excel(file, sheet_name=sheet_name, header=1)
-        mask = df.iloc[:, 3].astype(str).str.lower().str.contains('benedicks', na=False)
+        df.columns = df.columns.str.strip()
+
+        # Define expected column names
+        pm_col = 'PM'
+        balance_col = 'Avail Proj Auth'
+        co_col = 'Chargeable Object'
+        bl_code_col = 'Work Ctr'
+        appn_col = 'APPN'
+        desc_col = 'Project Description'
+
+        required_cols = [pm_col, balance_col, co_col, bl_code_col, appn_col, desc_col]
+        if not all(col in df.columns for col in required_cols):
+            st.error(f"Missing required columns for AI analysis in sheet '{sheet_name}'. Expected: {required_cols}")
+            return []
+
+        mask = df[pm_col].astype(str).str.lower().str.contains('benedicks', na=False)
         benedicks_data = df[mask]
         if benedicks_data.empty: return []
         
         projects = []
         for _, row in benedicks_data.iterrows():
             try:
-                balance = float(str(row.iloc[16]).replace('$', '').replace(',', '').strip())
+                balance = float(str(row[balance_col]).replace('$', '').replace(',', '').strip())
                 if balance > 0:
                     projects.append({
-                        "CO": str(row.iloc[6]), "BL_Code": str(row.iloc[7]),
-                        "APPN": str(row.iloc[2]), "Balance": balance, "Description": str(row.iloc[5])
+                        "CO": str(row[co_col]), "BL_Code": str(row[bl_code_col]),
+                        "APPN": str(row[appn_col]), "Balance": balance, "Description": str(row[desc_col])
                     })
-            except (ValueError, TypeError, IndexError): continue
+            except (ValueError, TypeError): continue
         return sorted(projects, key=lambda x: x['Balance'], reverse=True)[:30]
-    except Exception: return []
+    except Exception as e:
+        st.error(f"Error extracting Benedicks data from sheet '{sheet_name}': {e}")
+        return []
 
 def call_google_ai_api(user_message, context, api_key):
     system_prompt = f"""You are a BFM AI Assistant. Answer questions based ONLY on the provided context. The context is: {json.dumps(context, indent=2)}"""
@@ -118,7 +151,6 @@ with st.sidebar:
     st.header("⚙️ Configuration")
     uploaded_file = st.file_uploader("📊 Upload VLA Excel", type=['xlsx', 'xls'])
     
-    # NEW: Sheet selection UI
     sheet_name = None
     if uploaded_file:
         try:
@@ -159,7 +191,7 @@ with col3:
 
 if st.button("🚀 Calculate Analysis & Update AI", type="primary", use_container_width=True):
     if uploaded_file and not sheet_name:
-        st.error("Could not read the uploaded file. Please ensure it's a valid Excel file.")
+        st.error("File uploaded, but could not read sheets. Please ensure it's a valid Excel file and re-upload.")
     else:
         report_datetime = datetime.combine(report_date, datetime.min.time())
         monthly_personnel_cost = hourly_rate * 40 * 4.333 * branch_size
@@ -175,7 +207,6 @@ if st.button("🚀 Calculate Analysis & Update AI", type="primary", use_containe
             val['is_urgent'] = is_expiring_soon(report_datetime, val['expiry'])
         
         st.session_state.appropriations_data = appropriations
-        # MODIFIED: Pass the selected sheet_name to the data functions
         st.session_state.top_cos = get_top_cos_for_bl(uploaded_file, selected_bl, sheet_name)
         benedicks_details = extract_benedicks_data_for_ai(uploaded_file, sheet_name)
         
