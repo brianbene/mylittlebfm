@@ -63,11 +63,11 @@ def get_top_cos_for_bl(file, target_bl, sheet_name):
         df = pd.read_excel(file, sheet_name=sheet_name, header=1)
         df.columns = [str(c).strip() for c in df.columns]
         required_cols = ['Work Ctr', 'Avail Proj Auth', 'APPN', 'Chargeable Object']
-        if not all(col in df.columns for col in required_cols): return []
-        
+        if not all(col in df.columns for col in required_cols):
+            st.warning(f"Sheet '{sheet_name}' is missing required columns for Top COs analysis.")
+            return []
         bl_data = df[df['Work Ctr'].astype(str).str.contains(target_bl, na=False)]
         if bl_data.empty: return []
-        
         chargeable_objects = []
         for _, row in bl_data.iterrows():
             try:
@@ -76,7 +76,9 @@ def get_top_cos_for_bl(file, target_bl, sheet_name):
                     chargeable_objects.append({"CO_Number": str(row['Chargeable Object']), "APPN": str(row['APPN']), "Balance": balance})
             except (ValueError, TypeError): continue
         return sorted(chargeable_objects, key=lambda x: x['Balance'], reverse=True)[:5]
-    except Exception: return []
+    except Exception as e:
+        st.error(f"Failed to process sheet '{sheet_name}': {e}")
+        return []
 
 def extract_benedicks_data_for_ai(file, sheet_name):
     if not file: return []
@@ -85,38 +87,21 @@ def extract_benedicks_data_for_ai(file, sheet_name):
         df.columns = [str(c).strip() for c in df.columns]
         required_cols = ['PM', 'Avail Proj Auth', 'Chargeable Object', 'Work Ctr', 'APPN', 'Project Description']
         if not all(col in df.columns for col in required_cols): return []
-        
         mask = df['PM'].astype(str).str.lower().str.contains('benedicks', na=False)
         benedicks_data = df[mask]
         if benedicks_data.empty: return []
-        
         projects = []
         for _, row in benedicks_data.iterrows():
             try:
                 balance = float(str(row['Avail Proj Auth']).replace('$', '').replace(',', '').strip())
                 if balance > 0:
-                    projects.append({
-                        "CO": str(row['Chargeable Object']), "BL_Code": str(row['Work Ctr']),
-                        "APPN": str(row['APPN']), "Balance": balance, "Description": str(row['Project Description'])
-                    })
+                    projects.append({"CO": str(row['Chargeable Object']), "BL_Code": str(row['Work Ctr']), "APPN": str(row['APPN']), "Balance": balance, "Description": str(row['Project Description'])})
             except (ValueError, TypeError): continue
         return sorted(projects, key=lambda x: x['Balance'], reverse=True)[:30]
     except Exception: return []
 
 def call_google_ai_api(user_message, context, api_key):
-    # MODIFIED: New, smarter system prompt
-    system_prompt = f"""You are a BFM AI Assistant. Your goal is to provide context-aware answers based on the provided data.
-    Today's date is {date.today().strftime('%B %d, %Y')}.
-
-    Here is the data context you must use:
-    {json.dumps(context, indent=2)}
-
-    **Your Instructions:**
-    1.  **Prioritize UI Context:** The context contains a `selected_bl_for_ui` and `top_5_cos_for_selected_bl`. This is what the user is currently seeing on their screen. If they ask a general question like "what are the top COs?", you MUST primarily answer using this data.
-    2.  **Differentiate Data:** The context also contains `benedicks_portfolio_details`, which is a broader list of all projects managed by "Benedicks". Only use this list if the user specifically asks about the "entire portfolio", "all projects", or a BL code *not* currently selected in the UI.
-    3.  **Example response to 'What are the top COs?':** "Based on your selection of {context.get('selected_bl_for_ui')}, the top 5 Chargeable Objects are: [list from top_5_cos_for_selected_bl]. Would you like to see the top COs from the entire Benedicks portfolio instead?"
-    4.  **Answer ONLY from Context:** Do not invent data or use external knowledge. If the context doesn't contain the answer, state that clearly.
-    """
+    system_prompt = f"""You are a BFM AI Assistant. Answer questions based ONLY on the provided context. The context is: {json.dumps(context, indent=2)}"""
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
         headers = {'Content-Type': 'application/json'}
@@ -153,45 +138,105 @@ with st.sidebar:
     enable_ai_chat = st.checkbox("Enable BFM AI Assistant", value=True)
 
 for key in ['chat_history', 'analysis_context', 'top_cos', 'appropriations_data']:
-    if key not in st.session_state: st.session_state[key] = [] if key in ['chat_history', 'top_cos'] else {} if key == 'analysis_context' else None
+    if key not in st.session_state:
+        st.session_state[key] = [] if key in ['chat_history', 'top_cos'] else {} if key == 'analysis_context' else None
 
 col1, col2, col3 = st.columns(3)
-# ... input fields for OMN, OPN, SCN ...
+with col1:
+    st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
+    omn_balance = st.number_input("OMN Balance ($)", value=44053.0, key="omn_b", label_visibility="collapsed")
+with col2:
+    st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
+    opn_balance = st.number_input("OPN Balance ($)", value=1947299.0, key="opn_b", label_visibility="collapsed")
+with col3:
+    st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
+    scn_balance = st.number_input("SCN Balance ($)", value=1148438.0, key="scn_b", label_visibility="collapsed")
 
 if st.button("🚀 Calculate Analysis & Update AI", type="primary", use_container_width=True):
-    if uploaded_file and not sheet_name:
-        st.error("File uploaded, but could not read sheets. Please ensure it's a valid Excel file.")
-    else:
-        report_datetime = datetime.combine(report_date, datetime.min.time())
-        appropriations = {
-            'OMN': {'balance': omn_balance, 'expiry': get_appropriation_expiry_date('OMN', fiscal_year)},
-            'OPN': {'balance': opn_balance, 'expiry': get_appropriation_expiry_date('OPN', fiscal_year)},
-            'SCN': {'balance': scn_balance, 'expiry': get_appropriation_expiry_date('SCN', fiscal_year)}
-        }
-        for key, val in appropriations.items():
-            val['days_left'] = (val['expiry'] - report_datetime).days
-            val['work_days_left'] = count_working_days(report_datetime, val['expiry'])
-            val['is_urgent'] = is_expiring_soon(report_datetime, val['expiry'])
-        
-        st.session_state.appropriations_data = appropriations
-        st.session_state.top_cos = get_top_cos_for_bl(uploaded_file, selected_bl, sheet_name)
-        
-        # MODIFIED: AI context now includes the selected BL and its top COs
-        st.session_state.analysis_context = {
-            "financial_summary": { "total_balance": omn_balance + opn_balance + scn_balance, "monthly_personnel_cost": hourly_rate * 40 * 4.333 * branch_size},
-            "appropriations": {k: {**v, 'expiry': v['expiry'].isoformat()} for k, v in appropriations.items()},
-            "ui_context": {
-                "selected_bl_for_ui": selected_bl,
-                "top_5_cos_for_selected_bl": st.session_state.top_cos
-            },
-            "benedicks_portfolio_details": extract_benedicks_data_for_ai(uploaded_file, sheet_name) 
-        }
-        st.success("Analysis Complete!")
+    # --- ALL CALCULATIONS MOVED INSIDE THE BUTTON CLICK ---
+    report_datetime = datetime.combine(report_date, datetime.min.time())
+    monthly_personnel_cost = hourly_rate * 40 * 4.333 * branch_size
+    
+    appropriations = {
+        'OMN': {'balance': omn_balance, 'expiry': get_appropriation_expiry_date('OMN', fiscal_year)},
+        'OPN': {'balance': opn_balance, 'expiry': get_appropriation_expiry_date('OPN', fiscal_year)},
+        'SCN': {'balance': scn_balance, 'expiry': get_appropriation_expiry_date('SCN', fiscal_year)}
+    }
+    for key, val in appropriations.items():
+        val['days_left'] = (val['expiry'] - report_datetime).days
+        val['work_days_left'] = count_working_days(report_datetime, val['expiry'])
+        val['is_urgent'] = is_expiring_soon(report_datetime, val['expiry'])
+    
+    st.session_state.appropriations_data = appropriations
+    st.session_state.top_cos = get_top_cos_for_bl(uploaded_file, selected_bl, sheet_name)
+    benedicks_details = extract_benedicks_data_for_ai(uploaded_file, sheet_name)
+    
+    st.session_state.analysis_context = {
+        "financial_summary": {"total_balance": omn_balance + opn_balance + scn_balance, "monthly_personnel_cost": monthly_personnel_cost},
+        "appropriations": {k: {**v, 'expiry': v['expiry'].isoformat()} for k, v in appropriations.items()},
+        "ui_context": {"selected_bl_for_ui": selected_bl, "top_5_cos_for_selected_bl": st.session_state.top_cos},
+        "benedicks_portfolio_details": benedicks_details 
+    }
+    st.success("Analysis Complete!")
 
 # --- Display Results Area ---
-# ... (The UI display logic remains largely the same, as it correctly uses session state)
+# This section now reads from session_state to display persistent results.
+st.markdown("### 📊 Financial Health Overview")
+total_balance_display = st.session_state.analysis_context.get("financial_summary", {}).get("total_balance", 0)
+monthly_cost_display = st.session_state.analysis_context.get("financial_summary", {}).get("monthly_personnel_cost", 0)
+
+kpi_cols = st.columns(3)
+kpi_cols[0].metric("💰 Total Balance", f"${total_balance_display:,.0f}")
+months_of_burn = (total_balance_display / monthly_cost_display) if monthly_cost_display > 0 else 0
+kpi_cols[1].metric("⏳ Total Branch Months of Burn", f"{months_of_burn:.1f} months")
+kpi_cols[2].metric("👩‍💻 Monthly Cost", f"${monthly_cost_display:,.0f}")
+st.markdown("---")
+
+disp_col1, disp_col2 = st.columns(2)
+with disp_col1:
+    st.markdown("### Appropriations Status")
+    if st.session_state.appropriations_data:
+        colors = {'OMN': '#c0392b', 'OPN': '#e67e22', 'SCN': '#27ae60'}
+        for name, data in st.session_state.appropriations_data.items():
+            st.markdown(f'<div class="status-card {"urgent-expiry" if data["is_urgent"] else ""}" style="background: linear-gradient(135deg, {colors[name]}, #2c3e50); margin-bottom: 1rem;">'
+                        f'<h3>{name}</h3><h4>${data["balance"]:,.0f}</h4>'
+                        f'<p>Expires: {data["expiry"].strftime("%b %d, %Y")}</p>'
+                        f'<p>({data["days_left"]} days / {data["work_days_left"]} work days)</p></div>', unsafe_allow_html=True)
+    else:
+        st.info("Click 'Calculate Analysis' to see detailed expiry information.")
+
+with disp_col2:
+    st.markdown(f"### 🎯 Top 5 COs for {selected_bl}")
+    if st.session_state.top_cos:
+        report_datetime = datetime.combine(report_date, datetime.min.time())
+        for co in st.session_state.top_cos:
+            expiry = get_appropriation_expiry_date(co['APPN'], fiscal_year)
+            st.markdown(f"""
+            <div style="border-left: 5px solid {'#e74c3c' if is_expiring_soon(report_datetime, expiry) else '#555'}; padding: 0.5rem 1rem; margin-bottom: 0.5rem; background: #f8f9fa; border-radius: 5px;">
+                <strong>{co['CO_Number']} ({co['APPN']})</strong><br>
+                Balance: <strong>${co['Balance']:,.0f}</strong> | Expires: {expiry.strftime('%b %d, %Y')}
+            </div>""", unsafe_allow_html=True)
+    else:
+        st.info("Upload a file and click 'Calculate Analysis' to see the Top 5 Chargeable Objects.")
 
 # --- Chatbot UI ---
 if enable_ai_chat:
     st.markdown("---")
-    # ... (Chatbot UI code remains the same)
+    st.markdown("### 🤖 BFM AI Assistant")
+    if not GOOGLE_API_KEY.startswith("AIza"):
+        st.error("A valid Google AI API Key was not found in the script.")
+    else:
+        for message in st.session_state.chat_history:
+            with st.chat_message(message["role"]): st.markdown(message["content"])
+        if prompt := st.chat_input("Ask about your financial data..."):
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            with st.chat_message("user"): st.markdown(prompt)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    context = st.session_state.analysis_context
+                    if not context:
+                        response = "Please click 'Calculate Analysis' first to load data for the AI."
+                    else:
+                        response = call_google_ai_api(prompt, context, GOOGLE_API_KEY)
+                    st.markdown(response)
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
