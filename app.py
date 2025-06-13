@@ -130,23 +130,24 @@ def extract_vla_data(file, target_bl):
         return None, f"❌ Error extracting VLA data: {str(e)}", []
 
 def generate_bl_specific_email(context):
-    """Generates a detailed analysis and draft email for a specific BL code."""
     if not GOOGLE_API_KEY:
         return "Error: Google AI API Key is not configured."
 
+    # CORRECTED: Added the json_converter to handle datetime objects
+    def json_converter(o):
+        if isinstance(o, (datetime, date, timedelta)):
+            return str(o)
+
+    context_json = json.dumps(context, indent=2, default=json_converter)
     system_prompt = f"""
-    You are a Senior BFM (Budget & Financial Management) Analyst for a US Navy program office.
-    Your task is to analyze the provided financial data for a specific BL code and generate a professional email to your Branch Head, Gene.
+    You are a Senior BFM (Budget & Financial Management) Analyst. Your task is to analyze the financial data for a specific BL code and generate a professional email to your Branch Head, Gene.
 
     **Analysis Context for BL Code {context.get('bl_code', 'N/A')}:**
     ```json
-    {json.dumps(context, indent=2)}
+    {context_json}
     ```
-
     **Instructions:**
     Generate ONLY the email text, starting with the subject line. Use Markdown for formatting.
-
-    **Email Template:**
 
     **Subject:** Financial Status & Strategy for {context.get('bl_code', 'N/A')} - {date.today().strftime('%Y-%m-%d')}
 
@@ -176,7 +177,6 @@ def generate_bl_specific_email(context):
     Best,
     [Your Name]
     """
-
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GOOGLE_API_KEY}"
     headers = {'Content-Type': 'application/json'}
     data = {"contents": [{"parts": [{"text": system_prompt}]}]}
@@ -213,22 +213,71 @@ col1, col2, col3 = st.columns(3)
 with col1:
     st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
     omn_balance = st.number_input("OMN Balance ($)", value=float(data_source['omn']['balance']), key="omn_bal")
+    omn_l = st.number_input("OMN Labor ($)", value=float(data_source['omn']['L']), key="omn_l")
+    omn_m = st.number_input("OMN Material ($)", value=float(data_source['omn']['M']), key="omn_m")
+    omn_t = st.number_input("OMN Travel ($)", value=float(data_source['omn']['T']), key="omn_t")
 with col2:
     st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
     opn_balance = st.number_input("OPN Balance ($)", value=float(data_source['opn']['balance']), key="opn_bal")
+    opn_l = st.number_input("OPN Labor ($)", value=float(data_source['opn']['L']), key="opn_l")
+    opn_m = st.number_input("OPN Material ($)", value=float(data_source['opn']['M']), key="opn_m")
+    opn_t = st.number_input("OPN Travel ($)", value=float(data_source['opn']['T']), key="opn_t")
 with col3:
     st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
     scn_balance = st.number_input("SCN Balance ($)", value=float(data_source['scn']['balance']), key="scn_bal")
+    scn_l = st.number_input("SCN Labor ($)", value=float(data_source['scn']['L']), key="scn_l")
+    scn_m = st.number_input("SCN Material ($)", value=float(data_source['scn']['M']), key="scn_m")
+    scn_t = st.number_input("SCN Travel ($)", value=float(data_source['scn']['T']), key="scn_t")
+
+if st.button("🚀 Calculate Full Analysis", type="primary"):
+    st.markdown("--- \n## 📊 Analysis Results")
+    report_datetime = datetime.combine(report_date, datetime.min.time())
+    total_balance = omn_balance + opn_balance + scn_balance
+
+    st.markdown("### ⏳ Branch Hours Analysis (to Dec 31)")
+    end_of_year = datetime(fiscal_year, 12, 31)
+    working_days_to_eoy = count_working_days(report_datetime, end_of_year, fiscal_year)
+    
+    hours_needed = working_days_to_eoy * 8 * branch_size
+    hours_available = total_balance / hourly_rate if hourly_rate > 0 else 0
+    hours_delta = hours_available - hours_needed
+    
+    delta_color = "lightgreen" if hours_delta >= 0 else "lightcoral"
+    delta_text = "Excess" if hours_delta >= 0 else "Deficit"
+
+    st.markdown(f"""
+    <div class="hours-analysis-card">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+            <div><h4>Hours Needed (to Dec 31)</h4><h3>{hours_needed:,.0f}</h3></div>
+            <div><h4>Hours Available (Total)</h4><h3>{hours_available:,.0f}</h3></div>
+            <div><h4 style="color:{delta_color};">Hours {delta_text}</h4><h3 style="color:{delta_color};">{abs(hours_delta):,.0f}</h3></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("### 📋 Funding Status Breakdown")
+    status_col1, status_col2, status_col3 = st.columns(3)
+    appn_status_data = {'OMN': data_source['omn']['statuses'], 'OPN': data_source['opn']['statuses'], 'SCN': data_source['scn']['statuses']}
+    cols = [status_col1, status_col2, status_col3]
+    for i, (appn, statuses) in enumerate(appn_status_data.items()):
+        with cols[i]:
+            st.markdown(f"<h5>{appn} Status</h5>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="status-breakdown-card">
+                <p><strong>HOLD:</strong> ${statuses.get('HOLD', 0):,.2f}</p>
+                <p><strong>REL:</strong> ${statuses.get('REL', 0):,.2f}</p>
+                <p><strong>CRTD:</strong> ${statuses.get('CRTD', 0):,.2f}</p>
+            </div>
+            """, unsafe_allow_html=True)
 
 # --- AI Analysis Section ---
 st.markdown("---")
 st.markdown(f"### 🤖 AI-Powered Email Draft for {selected_bl}")
 if st.button(f"Generate AI Email for {selected_bl}", key="generate_email_button"):
-    if not st.session_state.extracted_data:
+    if not st.session_state.get('extracted_data'):
         st.error(f"Please upload a file and ensure data is found for {selected_bl} before generating an email.")
     else:
         with st.spinner(f"Analyzing {selected_bl} data and drafting email..."):
-            # 1. Calculate the necessary metrics for the context
             report_datetime = datetime.combine(report_date, datetime.min.time())
             total_bl_balance = omn_balance + opn_balance + scn_balance
             end_of_year = datetime(fiscal_year, 12, 31)
@@ -237,35 +286,30 @@ if st.button(f"Generate AI Email for {selected_bl}", key="generate_email_button"
             hours_available_from_bl = total_bl_balance / hourly_rate if hourly_rate > 0 else 0
             hours_delta = hours_available_from_bl - hours_needed
 
-            # 2. Prepare the context dictionary for the AI
             email_context = {
                 "bl_code": selected_bl,
                 "report_date": report_date,
                 "total_balance": total_bl_balance,
-                "appropriations": {
-                    "OMN": omn_balance,
-                    "OPN": opn_balance,
-                    "SCN": scn_balance,
-                },
+                "appropriations": {"OMN": omn_balance, "OPN": opn_balance, "SCN": scn_balance},
                 "status_breakdown": {
                     "HOLD": data_source['omn']['statuses']['HOLD'] + data_source['opn']['statuses']['HOLD'] + data_source['scn']['statuses']['HOLD'],
                     "REL": data_source['omn']['statuses']['REL'] + data_source['opn']['statuses']['REL'] + data_source['scn']['statuses']['REL'],
                 },
                 "hours_analysis": {
-                    "needed": hours_needed,
-                    "available": hours_available_from_bl,
-                    "delta": hours_delta,
+                    "needed": hours_needed, "available": hours_available_from_bl, "delta": hours_delta,
                     "delta_text": "Surplus" if hours_delta >= 0 else "Deficit"
                 },
                 "top_chargeable_objects": st.session_state.get('top_cos', [])
             }
 
-            # 3. Call the AI and display the response
             ai_response = generate_bl_specific_email(email_context)
             st.markdown(ai_response)
 
+# --- AI Chat ---
+if enable_ai_chat:
+    st.markdown("---")
+    # ... (AI Chat logic can go here if needed in the future)
+
+# --- Footer ---
 st.markdown("---")
-if st.checkbox("Show Manual Calculation Section"):
-    if st.button("🚀 Calculate Manual Analysis", type="primary"):
-        # ... (Manual calculation logic can remain here if needed) ...
-        st.success("Manual calculation complete!")
+st.markdown('<div style="text-align: center; opacity: 0.7;"><p>🚀 My Little BFM • Enhanced with Smart APPN Charging & Portfolio Analysis</p></div>', unsafe_allow_html=True)
