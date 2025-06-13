@@ -45,7 +45,7 @@ with st.sidebar:
     fiscal_year = st.selectbox("Select Fiscal Year", [2024, 2025, 2026, 2027], index=1)
     
     st.subheader("🎯 Project")
-    bl_codes = ['BL16200', 'BL12200', 'BL10000', 'BL12000', 'BL12100', 'BL12300', 'BL31100', 'BL41000']
+    bl_codes = ['BL12200', 'BL16200', 'BL10000', 'BL12000', 'BL12100', 'BL12300', 'BL31100', 'BL41000']
     selected_bl = st.selectbox("BL Code for Main Analysis", bl_codes)
     
     st.subheader("👨‍💼 Analysis Options")
@@ -60,6 +60,7 @@ with st.sidebar:
 
 # --- Helper & Analysis Functions ---
 def get_federal_holidays(year):
+    # This is a simplified list. For production, consider using a dedicated library.
     holidays_by_year = {
         2024: [datetime(2024, 10, 14), datetime(2024, 11, 11), datetime(2024, 11, 28)],
         2025: [datetime(2025, 1, 1), datetime(2025, 1, 20), datetime(2025, 2, 17), datetime(2025, 5, 26), 
@@ -89,14 +90,16 @@ def is_expiring_soon(report_date, expiry_date, months=2):
 
 def parse_balance(value):
     try:
-        return float(str(value).replace('$', '').replace(',', '').strip())
+        # Remove parentheses for negative numbers, then parse
+        str_val = str(value).replace('$', '').replace(',', '').replace('(', '-').replace(')', '').strip()
+        return float(str_val)
     except (ValueError, TypeError):
         return 0.0
 
 def extract_vla_data(file, target_bl):
     try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
-        bl_data = df[df.iloc[:, 8].astype(str).str.contains(target_bl, na=False)]
+        df = pd.read_excel(file, sheet_name=0, header=2) # header=2 skips first two rows
+        bl_data = df[df.iloc[:, 7].astype(str).str.contains(target_bl, na=False)]
         
         if bl_data.empty: return None, f"No data found for {target_bl}", []
         
@@ -106,33 +109,33 @@ def extract_vla_data(file, target_bl):
         for _, row in bl_data.iterrows():
             appn = str(row.iloc[2]).upper()
             type_code = str(row.iloc[1]).upper().strip()
-            # CORRECTED: Use column 10 for "Balance"
-            balance = parse_balance(row.iloc[10])
+            # CORRECTED: Use column 16 for "Balance"
+            balance = parse_balance(row.iloc[16])
             
             if balance > 0:
                 chargeable_objects.append({'CO_Number': str(row.iloc[5]), 'APPN': appn, 'Type': type_code, 'Balance': balance})
 
             appn_key = 'omn' if 'OMN' in appn else 'scn' if 'SCN' in appn else 'opn'
-            result[appn_key]['balance'] += balance
-            
-            if type_code == 'L': result[appn_key]['L'] += balance
-            elif type_code == 'M': result[appn_key]['M'] += balance
-            elif type_code == 'T': result[appn_key]['T'] += balance
+            if appn_key in result:
+                result[appn_key]['balance'] += balance
+                if type_code == 'L': result[appn_key]['L'] += balance
+                elif type_code == 'M': result[appn_key]['M'] += balance
+                elif type_code == 'T': result[appn_key]['T'] += balance
 
         top_cos = sorted(chargeable_objects, key=lambda x: x['Balance'], reverse=True)[:5]
         return result, f"✅ Extracted data for {target_bl}", top_cos
     except Exception as e:
-        return None, f"❌ Error: {str(e)}", []
+        return None, f"❌ Error extracting VLA data: {str(e)}", []
 
 def analyze_benedicks_portfolio(file):
     try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
+        df = pd.read_excel(file, sheet_name=0, header=2)
         benedicks_mask = df.iloc[:, 3].astype(str).str.lower().str.contains('benedick|denovellis', na=False)
         benedicks_data = df[benedicks_mask]
         
         if benedicks_data.empty: return None, "No Benedicks/Denovellis entries found", []
         
-        non_main_bl_mask = ~benedicks_data.iloc[:, 8].astype(str).str.contains(selected_bl, na=False)
+        non_main_bl_mask = ~benedicks_data.iloc[:, 7].astype(str).str.contains(selected_bl, na=False)
         filtered_data = benedicks_data[non_main_bl_mask]
         
         if filtered_data.empty: return None, f"All Benedicks/Denovellis entries are within {selected_bl}", []
@@ -142,12 +145,12 @@ def analyze_benedicks_portfolio(file):
         bl_code_summary = {}
 
         for _, row in filtered_data.iterrows():
-            # CORRECTED: Use column 10 for "Balance"
-            balance = parse_balance(row.iloc[10])
+            # CORRECTED: Use column 16 for "Balance"
+            balance = parse_balance(row.iloc[16])
             if balance <= 0: continue
 
             appn = str(row.iloc[2]).upper()
-            bl_code = str(row.iloc[8])
+            bl_code = str(row.iloc[7])
             
             projects.append({'APPN': appn, 'Balance': balance, 'BL_Code': bl_code, 'Description': str(row.iloc[5])})
             
@@ -156,8 +159,9 @@ def analyze_benedicks_portfolio(file):
             bl_code_summary[bl_code]['count'] += 1
             
             appn_key = 'omn' if 'OMN' in appn else 'scn' if 'SCN' in appn else 'opn' if 'OPN' in appn else 'other'
-            result[appn_key]['balance'] += balance
-            result[appn_key]['count'] += 1
+            if appn_key in result:
+                result[appn_key]['balance'] += balance
+                result[appn_key]['count'] += 1
 
         total_balance = sum(item['balance'] for item in result.values())
         total_count = sum(item['count'] for item in result.values())
@@ -172,39 +176,38 @@ def analyze_benedicks_portfolio(file):
 
 def analyze_all_personal_funding(file):
     try:
-        df = pd.read_excel(file, sheet_name='Consolidated Data', header=1)
+        df = pd.read_excel(file, sheet_name=0, header=2)
         benedicks_mask = df.iloc[:, 3].astype(str).str.lower().str.contains('benedick|denovellis', na=False)
         benedicks_data = df[benedicks_mask]
 
         if benedicks_data.empty: return None, "No Benedicks/Denovellis entries found", []
 
-        exclude_mask = benedicks_data.iloc[:, 8].astype(str).str.contains(f'BL12200|{selected_bl}', na=False, regex=True)
+        exclude_mask = benedicks_data.iloc[:, 7].astype(str).str.contains(f'BL12200|{selected_bl}', na=False, regex=True)
         filtered_data = benedicks_data[~exclude_mask]
 
         if filtered_data.empty: return None, f"No other department projects found for Benedicks/Denovellis (outside of {selected_bl} and BL12200).", []
 
         bl_code_analysis = {}
         for _, row in filtered_data.iterrows():
-            # CORRECTED: Use column 10 for "Balance"
-            balance = parse_balance(row.iloc[10])
+            # CORRECTED: Use column 16 for "Balance"
+            balance = parse_balance(row.iloc[16])
             if balance <= 0: continue
             
-            bl_code = str(row.iloc[8])
+            bl_code = str(row.iloc[7])
             if bl_code not in bl_code_analysis:
                 bl_code_analysis[bl_code] = {'total_balance': 0.0, 'project_count': 0, 'projects': []}
             
             bl_code_analysis[bl_code]['total_balance'] += balance
             bl_code_analysis[bl_code]['project_count'] += 1
-            bl_code_analysis[bl_code]['projects'].append({'CO_Number': str(row.iloc[5]), 'Balance': balance, 'Description': str(row.iloc[4])})
+            bl_code_analysis[bl_code]['projects'].append({'CO_Number': str(row.iloc[6]), 'Balance': balance, 'Description': str(row.iloc[5])})
 
         sorted_bl_codes = sorted(bl_code_analysis.items(), key=lambda x: x[1]['total_balance'], reverse=True)
         total_balance = sum(data['total_balance'] for _, data in sorted_bl_codes)
-        total_projects = sum(data['project_count'] for _, data in sorted_bl_codes)
-
+        
         return {
             'bl_code_analysis': sorted_bl_codes, 'total_balance': total_balance,
-            'total_projects': total_projects, 'bl_code_count': len(sorted_bl_codes)
-        }, f"✅ Found {total_projects} projects across {len(sorted_bl_codes)} other departments worth ${total_balance:,.0f}", []
+            'bl_code_count': len(sorted_bl_codes)
+        }, f"✅ Found {len(filtered_data)} projects across {len(sorted_bl_codes)} other departments worth ${total_balance:,.0f}", []
     except Exception as e:
         return None, f"❌ Error analyzing personal funding: {str(e)}", []
 
@@ -228,7 +231,7 @@ def format_analysis_for_ai(extracted_data, benedicks_data, total_balance, monthl
 def call_google_ai_api(user_message, context, api_key):
     if not api_key: return "The Google AI API key is not configured. Please add it to the script."
     
-    # CORRECTED: Helper function to convert datetime objects for JSON
+    # CORRECTED: Helper function to convert datetime objects for JSON serialization
     def json_converter(o):
         if isinstance(o, (datetime, date)):
             return o.isoformat()
@@ -254,7 +257,7 @@ def call_google_ai_api(user_message, context, api_key):
     except (KeyError, IndexError):
         return "Received an unexpected response from the AI. Please try again."
     except Exception as e:
-        return f"An unexpected error occurred: {e}"
+        return f"An unexpected error occurred during API call: {e}"
 
 # --- Session State Initialization ---
 if 'extracted_data' not in st.session_state: st.session_state.extracted_data = None
@@ -342,16 +345,17 @@ if st.button("🚀 Calculate Full Analysis", type="primary"):
     cumulative_months_funded = 0
     for appn in appn_data:
         if appn['balance'] > 0:
-            months_covered = appn['balance'] / monthly_personnel_cost
+            months_covered = appn['balance'] / monthly_personnel_cost if monthly_personnel_cost > 0 else 0
             start_date = report_datetime + timedelta(days=cumulative_months_funded * 30.5)
             end_date = start_date + timedelta(days=months_covered * 30.5)
             days_to_expiry = (appn['expiry'] - report_datetime).days
             card_class = "urgent-expiry" if is_expiring_soon(report_datetime, appn['expiry']) else "status-card"
             
-            charging_strategy.append({
+            strategy_item = {
                 'appn': appn['name'], 'amount': appn['balance'], 'months': months_covered,
                 'start_date': start_date, 'end_date': end_date, 'expiry_date': appn['expiry']
-            })
+            }
+            charging_strategy.append(strategy_item)
 
             st.markdown(f"""
             <div class="{card_class}" style="background: linear-gradient(135deg, #2c3e50, #466368);">
