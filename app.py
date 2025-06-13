@@ -19,6 +19,8 @@ st.markdown("""
 .status-card {border-radius: 15px; padding: 1rem; text-align: center; margin: 0.5rem 0; color: white;}
 .pm-analysis-card {background: linear-gradient(135deg, #8e44ad, #9b59b6); color: white; padding: 1.5rem; border-radius: 15px; margin: 1rem 0; border: 2px solid #fff;}
 .urgent-expiry {background: linear-gradient(135deg, #e74c3c, #c0392b) !important; animation: pulse 2s infinite;}
+.hours-analysis-card { background: linear-gradient(135deg, #2c3e50, #466368); color: white; padding: 1.5rem; border-radius: 15px; margin-bottom: 1.5rem; text-align: center; }
+.status-breakdown-card { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.3); border-radius: 10px; padding: 1rem; margin-top: 0.5rem; }
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
   70% { box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
@@ -98,22 +100,30 @@ def parse_balance(value):
 
 def extract_vla_data(file, target_bl):
     try:
-        df = pd.read_excel(file, sheet_name=0, header=2) # header=2 skips first two rows
+        # Use sheet_name=0 to get the first sheet, header=2 to start parsing from the third row
+        df = pd.read_excel(file, sheet_name=0, header=2) 
+        # Billing Element is column H (index 7)
         bl_data = df[df.iloc[:, 7].astype(str).str.contains(target_bl, na=False)]
         
         if bl_data.empty: return None, f"No data found for {target_bl}", []
         
-        result = {'omn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0}, 'opn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0}, 'scn': {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0}}
+        # Expanded result dictionary to include L/M/T and Statuses
+        def create_appn_structure():
+            return {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'statuses': {'HOLD': 0.0, 'REL': 0.0, 'CRTD': 0.0}}
+        
+        result = {'omn': create_appn_structure(), 'opn': create_appn_structure(), 'scn': create_appn_structure()}
         chargeable_objects = []
         
         for _, row in bl_data.iterrows():
             appn = str(row.iloc[2]).upper()
             type_code = str(row.iloc[1]).upper().strip()
-            # CORRECTED: Use column 16 for "Balance"
+            # CORRECTED: Balance is column Q (index 16)
             balance = parse_balance(row.iloc[16])
+            # Status is column AB (index 27)
+            status = str(row.iloc[27]).upper().strip()
             
             if balance > 0:
-                chargeable_objects.append({'CO_Number': str(row.iloc[5]), 'APPN': appn, 'Type': type_code, 'Balance': balance})
+                chargeable_objects.append({'CO_Number': str(row.iloc[6]), 'APPN': appn, 'Type': type_code, 'Balance': balance})
 
             appn_key = 'omn' if 'OMN' in appn else 'scn' if 'SCN' in appn else 'opn'
             if appn_key in result:
@@ -121,6 +131,10 @@ def extract_vla_data(file, target_bl):
                 if type_code == 'L': result[appn_key]['L'] += balance
                 elif type_code == 'M': result[appn_key]['M'] += balance
                 elif type_code == 'T': result[appn_key]['T'] += balance
+                
+                # Increment status totals
+                if status in result[appn_key]['statuses']:
+                    result[appn_key]['statuses'][status] += balance
 
         top_cos = sorted(chargeable_objects, key=lambda x: x['Balance'], reverse=True)[:5]
         return result, f"✅ Extracted data for {target_bl}", top_cos
@@ -145,7 +159,6 @@ def analyze_benedicks_portfolio(file):
         bl_code_summary = {}
 
         for _, row in filtered_data.iterrows():
-            # CORRECTED: Use column 16 for "Balance"
             balance = parse_balance(row.iloc[16])
             if balance <= 0: continue
 
@@ -174,43 +187,6 @@ def analyze_benedicks_portfolio(file):
     except Exception as e:
         return None, f"❌ Error analyzing Benedicks portfolio: {str(e)}", []
 
-def analyze_all_personal_funding(file):
-    try:
-        df = pd.read_excel(file, sheet_name=0, header=2)
-        benedicks_mask = df.iloc[:, 3].astype(str).str.lower().str.contains('benedick|denovellis', na=False)
-        benedicks_data = df[benedicks_mask]
-
-        if benedicks_data.empty: return None, "No Benedicks/Denovellis entries found", []
-
-        exclude_mask = benedicks_data.iloc[:, 7].astype(str).str.contains(f'BL12200|{selected_bl}', na=False, regex=True)
-        filtered_data = benedicks_data[~exclude_mask]
-
-        if filtered_data.empty: return None, f"No other department projects found for Benedicks/Denovellis (outside of {selected_bl} and BL12200).", []
-
-        bl_code_analysis = {}
-        for _, row in filtered_data.iterrows():
-            # CORRECTED: Use column 16 for "Balance"
-            balance = parse_balance(row.iloc[16])
-            if balance <= 0: continue
-            
-            bl_code = str(row.iloc[7])
-            if bl_code not in bl_code_analysis:
-                bl_code_analysis[bl_code] = {'total_balance': 0.0, 'project_count': 0, 'projects': []}
-            
-            bl_code_analysis[bl_code]['total_balance'] += balance
-            bl_code_analysis[bl_code]['project_count'] += 1
-            bl_code_analysis[bl_code]['projects'].append({'CO_Number': str(row.iloc[6]), 'Balance': balance, 'Description': str(row.iloc[5])})
-
-        sorted_bl_codes = sorted(bl_code_analysis.items(), key=lambda x: x[1]['total_balance'], reverse=True)
-        total_balance = sum(data['total_balance'] for _, data in sorted_bl_codes)
-        
-        return {
-            'bl_code_analysis': sorted_bl_codes, 'total_balance': total_balance,
-            'bl_code_count': len(sorted_bl_codes)
-        }, f"✅ Found {len(filtered_data)} projects across {len(sorted_bl_codes)} other departments worth ${total_balance:,.0f}", []
-    except Exception as e:
-        return None, f"❌ Error analyzing personal funding: {str(e)}", []
-
 # --- AI Integration ---
 def format_analysis_for_ai(extracted_data, benedicks_data, total_balance, monthly_personnel_cost, charging_strategy):
     context = {
@@ -229,18 +205,16 @@ def format_analysis_for_ai(extracted_data, benedicks_data, total_balance, monthl
     return context
 
 def call_google_ai_api(user_message, context, api_key):
-    if not api_key: return "The Google AI API key is not configured. Please add it to the script."
+    if not api_key: return "The Google AI API key is not configured."
     
-    # CORRECTED: Helper function to convert datetime objects for JSON serialization
     def json_converter(o):
         if isinstance(o, (datetime, date)):
             return o.isoformat()
 
     try:
-        # CORRECTED: Use the json_converter in the dumps call
         api_context_json = json.dumps(context, indent=2, default=json_converter)
         
-        system_prompt = f"""You are a Budget and Financial Management (BFM) AI Assistant specializing in Navy appropriations. 
+        system_prompt = f"""You are a Budget and Financial Management (BFM) AI Assistant. 
         Analyze this data and answer the user's question. Current analysis context: {api_context_json}.
         Keep responses concise and actionable."""
         
@@ -255,91 +229,107 @@ def call_google_ai_api(user_message, context, api_key):
     except requests.exceptions.RequestException as e:
         return f"API Error: {e}"
     except (KeyError, IndexError):
-        return "Received an unexpected response from the AI. Please try again."
+        return "Received an unexpected response from the AI."
     except Exception as e:
         return f"An unexpected error occurred during API call: {e}"
 
 # --- Session State Initialization ---
-if 'extracted_data' not in st.session_state: st.session_state.extracted_data = None
-if 'last_bl_code' not in st.session_state: st.session_state.last_bl_code = None
-if 'benedicks_data' not in st.session_state: st.session_state.benedicks_data = None
-if 'chat_history' not in st.session_state: st.session_state.chat_history = []
-if 'analysis_context' not in st.session_state: st.session_state.analysis_context = {}
+for key in ['extracted_data', 'last_bl_code', 'benedicks_data', 'analysis_context', 'chat_history']:
+    if key not in st.session_state:
+        st.session_state[key] = None if key != 'chat_history' else []
 
-# --- Main Application ---
+# --- Main App Body ---
 if uploaded_file:
     if st.session_state.last_bl_code != selected_bl:
-        extracted_data, message, _ = extract_vla_data(uploaded_file, selected_bl)
-        st.session_state.extracted_data = extracted_data
+        st.session_state.extracted_data, message, _ = extract_vla_data(uploaded_file, selected_bl)
         st.session_state.last_bl_code = selected_bl
         st.info(message)
-    
-    if enable_personal_funding:
-        st.markdown("### 💼 Complete Personal Funding Analysis (Other Departments)")
-        st.info(f"💡 Analyzing all projects where you are PM, excluding your main department ({selected_bl}) and managed funds (BL12200).")
-        personal_analysis, personal_message, _ = analyze_all_personal_funding(uploaded_file)
-        if personal_analysis:
-            st.success(personal_message)
-            for i, (bl_code, bl_data) in enumerate(personal_analysis['bl_code_analysis']):
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #e67e22aa, #d35400dd); color: white; padding: 1rem; border-radius: 10px; margin: 0.5rem 0;">
-                    <h5>#{i+1}: {bl_code} (Other Dept)</h5>
-                    <p><strong>Total Balance:</strong> ${bl_data["total_balance"]:,.0f} | <strong>Projects:</strong> {bl_data["project_count"]}</p>
-                </div>
-                """, unsafe_allow_html=True)
-        else:
-            st.warning(personal_message)
 
-    if enable_pm_analysis:
-        st.markdown("### 👨‍💼 Benedicks/Denovellis External Portfolio Analysis")
-        benedicks_analysis, benedicks_message, _ = analyze_benedicks_portfolio(uploaded_file)
-        st.session_state.benedicks_data = benedicks_analysis
-        if benedicks_analysis:
-            st.success(benedicks_message)
-            st.markdown(f"""
-            <div class="pm-analysis-card">
-                <h3>External Portfolio Summary</h3>
-                <p><strong>Total Projects:</strong> {benedicks_analysis['total_count']} | <strong>Total Value:</strong> ${benedicks_analysis['total_balance']:,.0f}</p>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.warning(benedicks_message)
-
-# --- Data Input & Calculation ---
+# --- Data Input & Calculation Section ---
 st.markdown(f"--- \n### 💰 Main Analysis for {selected_bl}")
 
-extracted_data = st.session_state.get('extracted_data')
-defaults = {
-    'omn': {'balance': 44053.0, 'L': 44053.0, 'M': 0.0, 'T': 0.0},
-    'opn': {'balance': 1947299.0, 'L': 1947299.0, 'M': 0.0, 'T': 0.0},
-    'scn': {'balance': 1148438.0, 'L': 813595.0, 'M': 334843.0, 'T': 0.0}
-}
-data_source = extracted_data if extracted_data else defaults
+def get_default_structure():
+    return {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'statuses': {'HOLD': 0.0, 'REL': 0.0, 'CRTD': 0.0}}
+
+defaults = {'omn': get_default_structure(), 'opn': get_default_structure(), 'scn': get_default_structure()}
+data_source = st.session_state.get('extracted_data') or defaults
 
 col1, col2, col3 = st.columns(3)
 with col1:
     st.markdown('<div class="metric-card"><h4>OMN</h4></div>', unsafe_allow_html=True)
-    omn_balance = st.number_input("OMN Balance ($)", value=data_source['omn']['balance'])
+    omn_balance = st.number_input("OMN Balance ($)", value=data_source['omn']['balance'], key="omn_bal")
+    omn_l = st.number_input("OMN Labor ($)", value=data_source['omn']['L'], key="omn_l")
+    omn_m = st.number_input("OMN Material ($)", value=data_source['omn']['M'], key="omn_m")
+    omn_t = st.number_input("OMN Travel ($)", value=data_source['omn']['T'], key="omn_t")
 with col2:
     st.markdown('<div class="metric-card"><h4>OPN</h4></div>', unsafe_allow_html=True)
-    opn_balance = st.number_input("OPN Balance ($)", value=data_source['opn']['balance'])
+    opn_balance = st.number_input("OPN Balance ($)", value=data_source['opn']['balance'], key="opn_bal")
+    opn_l = st.number_input("OPN Labor ($)", value=data_source['opn']['L'], key="opn_l")
+    opn_m = st.number_input("OPN Material ($)", value=data_source['opn']['M'], key="opn_m")
+    opn_t = st.number_input("OPN Travel ($)", value=data_source['opn']['T'], key="opn_t")
 with col3:
     st.markdown('<div class="metric-card"><h4>SCN</h4></div>', unsafe_allow_html=True)
-    scn_balance = st.number_input("SCN Balance ($)", value=data_source['scn']['balance'])
+    scn_balance = st.number_input("SCN Balance ($)", value=data_source['scn']['balance'], key="scn_bal")
+    scn_l = st.number_input("SCN Labor ($)", value=data_source['scn']['L'], key="scn_l")
+    scn_m = st.number_input("SCN Material ($)", value=data_source['scn']['M'], key="scn_m")
+    scn_t = st.number_input("SCN Travel ($)", value=data_source['scn']['T'], key="scn_t")
 
 if st.button("🚀 Calculate Full Analysis", type="primary"):
+    st.markdown("--- \n## 📊 Analysis Results")
     report_datetime = datetime.combine(report_date, datetime.min.time())
-    monthly_personnel_cost = hourly_rate * hours_per_week * 4.3 * branch_size * (1 + overhead_rate / 100) if (hourly_rate * hours_per_week * branch_size) > 0 else 1
+    monthly_personnel_cost = hourly_rate * hours_per_week * 4.3 * branch_size * (1 + overhead_rate / 100)
     total_balance = omn_balance + opn_balance + scn_balance
 
+    # --- Total Hours Analysis Card ---
+    st.markdown("### ⏳ Branch Hours Analysis (to End of Fiscal Year)")
+    end_of_fy = datetime(fiscal_year, 9, 30)
+    working_days_to_eofy = count_working_days(report_datetime, end_of_fy, fiscal_year)
+    
+    hours_needed = working_days_to_eofy * 8 * branch_size
+    hours_available = total_balance / hourly_rate if hourly_rate > 0 else 0
+    hours_delta = hours_available - hours_needed
+    
+    delta_color = "lightgreen" if hours_delta >= 0 else "lightcoral"
+    delta_text = "Excess" if hours_delta >= 0 else "Deficit"
+
+    st.markdown(f"""
+    <div class="hours-analysis-card">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+            <div><h4>Hours Needed</h4><h3>{hours_needed:,.0f}</h3></div>
+            <div><h4>Hours Available</h4><h3>{hours_available:,.0f}</h3></div>
+            <div><h4 style="color:{delta_color};">Hours {delta_text}</h4><h3 style="color:{delta_color};">{abs(hours_delta):,.0f}</h3></div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # --- Funding Status Breakdown ---
+    st.markdown("### 📋 Funding Status Breakdown")
+    status_col1, status_col2, status_col3 = st.columns(3)
+    appn_status_data = {
+        'OMN': data_source['omn']['statuses'],
+        'OPN': data_source['opn']['statuses'],
+        'SCN': data_source['scn']['statuses']
+    }
+    cols = [status_col1, status_col2, status_col3]
+    for i, (appn, statuses) in enumerate(appn_status_data.items()):
+        with cols[i]:
+            st.markdown(f"<h5>{appn} Status</h5>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="status-breakdown-card">
+                <p><strong>HOLD:</strong> ${statuses.get('HOLD', 0):,.2f}</p>
+                <p><strong>REL:</strong> ${statuses.get('REL', 0):,.2f}</p>
+                <p><strong>CRTD:</strong> ${statuses.get('CRTD', 0):,.2f}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # --- Smart Charging Strategy ---
+    st.markdown('<div class="bubble"><h3>💡 Smart APPN Charging Strategy</h3></div>', unsafe_allow_html=True)
     appn_data = [
         {"name": "OMN", "balance": omn_balance, "expiry": get_appropriation_expiry_date('OMN', fiscal_year)},
         {"name": "OPN", "balance": opn_balance, "expiry": get_appropriation_expiry_date('OPN', fiscal_year)},
         {"name": "SCN", "balance": scn_balance, "expiry": get_appropriation_expiry_date('SCN', fiscal_year)}
     ]
     appn_data.sort(key=lambda x: x['expiry'])
-    
-    st.markdown('<div class="bubble"><h3>💡 Smart APPN Charging Strategy</h3></div>', unsafe_allow_html=True)
     
     charging_strategy = []
     cumulative_months_funded = 0
@@ -351,14 +341,9 @@ if st.button("🚀 Calculate Full Analysis", type="primary"):
             days_to_expiry = (appn['expiry'] - report_datetime).days
             card_class = "urgent-expiry" if is_expiring_soon(report_datetime, appn['expiry']) else "status-card"
             
-            strategy_item = {
-                'appn': appn['name'], 'amount': appn['balance'], 'months': months_covered,
-                'start_date': start_date, 'end_date': end_date, 'expiry_date': appn['expiry']
-            }
-            charging_strategy.append(strategy_item)
-
+            charging_strategy.append({'appn': appn['name'], 'amount': appn['balance'], 'months': months_covered, 'start_date': start_date, 'end_date': end_date, 'expiry_date': appn['expiry']})
             st.markdown(f"""
-            <div class="{card_class}" style="background: linear-gradient(135deg, #2c3e50, #466368);">
+            <div class="{card_class}" style="background: linear-gradient(135deg, #34495e, #2c3e50);">
                 <h4>Charge to {appn['name']}</h4>
                 <p><strong>Funding:</strong> ${appn['balance']:,.0f} | <strong>Covers:</strong> {months_covered:.1f} months</p>
                 <p><strong>Timeframe:</strong> {start_date.strftime("%b %Y")} → {end_date.strftime("%b %Y")}</p>
@@ -367,19 +352,7 @@ if st.button("🚀 Calculate Full Analysis", type="primary"):
             """, unsafe_allow_html=True)
             cumulative_months_funded += months_covered
 
-    st.markdown("### 📉 Funding Burn Down")
-    if charging_strategy:
-        burn_down_df = pd.DataFrame(charging_strategy)
-        burn_down_df['cumulative_balance'] = burn_down_df['amount'].cumsum()
-
-        fig_burn = go.Figure()
-        fig_burn.add_trace(go.Scatter(x=burn_down_df['end_date'], y=total_balance - burn_down_df['cumulative_balance'],
-                                    mode='lines+markers', name='Remaining Balance', line=dict(shape='spline')))
-        fig_burn.update_layout(title='Projected Funding Burn Down', xaxis_title='Date', yaxis_title='Remaining Balance ($)')
-        st.plotly_chart(fig_burn, use_container_width=True)
-
-    st.session_state.analysis_context = format_analysis_for_ai(
-        extracted_data, st.session_state.benedicks_data, total_balance, monthly_personnel_cost, charging_strategy)
+    st.session_state.analysis_context = format_analysis_for_ai(st.session_state.extracted_data, st.session_state.benedicks_data, total_balance, monthly_personnel_cost, charging_strategy)
 
 # --- BFM AI Assistant ---
 if enable_ai_chat:
@@ -388,13 +361,11 @@ if enable_ai_chat:
         st.error("The Google AI API key is missing. The chat assistant is disabled.")
     else:
         for role, message in st.session_state.chat_history:
-            with st.chat_message(role):
-                st.markdown(message)
+            with st.chat_message(role): st.markdown(message)
         
         if prompt := st.chat_input("Ask about your financial data..."):
             st.session_state.chat_history.append(("user", prompt))
-            with st.chat_message("user"):
-                st.markdown(prompt)
+            with st.chat_message("user"): st.markdown(prompt)
 
             with st.chat_message("assistant"):
                 with st.spinner("🤖 Thinking..."):
