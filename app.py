@@ -98,8 +98,7 @@ def parse_balance(value):
 
 def extract_vla_data(file, target_bl):
     try:
-        df = pd.read_excel(file, sheet_name=0, header=2)
-        # CORRECTED: Billing Element is column I (index 8)
+        df = pd.read_excel(file, sheet_name=0, header=2) 
         bl_data = df[df.iloc[:, 8].astype(str).str.contains(target_bl, na=False)]
         
         if bl_data.empty: return None, f"No data found for {target_bl}", []
@@ -131,7 +130,6 @@ def extract_vla_data(file, target_bl):
 
 # --- AI Integration & Other Functions ---
 def call_google_ai_api(user_message, context, api_key):
-    # ... (rest of the functions are unchanged but included for completeness) ...
     if not api_key: return "The Google AI API key is not configured."
     
     def json_converter(o):
@@ -206,11 +204,12 @@ if st.button("🚀 Calculate Full Analysis", type="primary"):
     monthly_personnel_cost = hourly_rate * hours_per_week * 4.3 * branch_size * (1 + overhead_rate / 100)
     total_balance = omn_balance + opn_balance + scn_balance
 
-    st.markdown("### ⏳ Branch Hours Analysis (to End of Fiscal Year)")
-    end_of_fy = datetime(fiscal_year, 9, 30)
-    working_days_to_eofy = count_working_days(report_datetime, end_of_fy, fiscal_year)
+    st.markdown("### ⏳ Branch Hours Analysis (to Dec 31)")
+    # UPDATED: Target date is now end of December
+    end_of_year = datetime(fiscal_year, 12, 31)
+    working_days_to_eoy = count_working_days(report_datetime, end_of_year, fiscal_year)
     
-    hours_needed = working_days_to_eofy * 8 * branch_size
+    hours_needed = working_days_to_eoy * 8 * branch_size
     hours_available = total_balance / hourly_rate if hourly_rate > 0 else 0
     hours_delta = hours_available - hours_needed
     
@@ -220,8 +219,8 @@ if st.button("🚀 Calculate Full Analysis", type="primary"):
     st.markdown(f"""
     <div class="hours-analysis-card">
         <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
-            <div><h4>Hours Needed</h4><h3>{hours_needed:,.0f}</h3></div>
-            <div><h4>Hours Available</h4><h3>{hours_available:,.0f}</h3></div>
+            <div><h4>Hours Needed (to Dec 31)</h4><h3>{hours_needed:,.0f}</h3></div>
+            <div><h4>Hours Available (Total)</h4><h3>{hours_available:,.0f}</h3></div>
             <div><h4 style="color:{delta_color};">Hours {delta_text}</h4><h3 style="color:{delta_color};">{abs(hours_delta):,.0f}</h3></div>
         </div>
     </div>
@@ -249,7 +248,7 @@ if st.button("🚀 Calculate Full Analysis", type="primary"):
     st.markdown('<div class="bubble"><h3>💡 Smart APPN Charging Strategy</h3></div>', unsafe_allow_html=True)
     # ... (rest of the app logic remains the same)
 
-# ... (The rest of the script for AI Chat and Footer is unchanged)
+# --- AI Chat and Footer ---
 if enable_ai_chat:
     st.markdown("--- \n### 🤖 BFM AI Assistant")
     if not GOOGLE_API_KEY:
