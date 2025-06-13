@@ -56,7 +56,6 @@ with st.sidebar:
     enable_ai_chat = st.checkbox("Enable BFM AI Assistant", value=True)
     
     # --- WARNING: Hardcoding API keys is a security risk. ---
-    # It is highly recommended to use Streamlit Secrets (st.secrets) instead.
     GOOGLE_API_KEY = "AIzaSyBynjotD4bpji6ThOtpO14tstc-qF2cFp4"
 
 # --- Helper & Analysis Functions ---
@@ -107,7 +106,8 @@ def extract_vla_data(file, target_bl):
         for _, row in bl_data.iterrows():
             appn = str(row.iloc[2]).upper()
             type_code = str(row.iloc[1]).upper().strip()
-            balance = parse_balance(row.iloc[9]) # Actual Balance is column index 9
+            # CORRECTED: Use column 10 for "Balance"
+            balance = parse_balance(row.iloc[10])
             
             if balance > 0:
                 chargeable_objects.append({'CO_Number': str(row.iloc[5]), 'APPN': appn, 'Type': type_code, 'Balance': balance})
@@ -132,7 +132,6 @@ def analyze_benedicks_portfolio(file):
         
         if benedicks_data.empty: return None, "No Benedicks/Denovellis entries found", []
         
-        # Exclude selected main BL code
         non_main_bl_mask = ~benedicks_data.iloc[:, 8].astype(str).str.contains(selected_bl, na=False)
         filtered_data = benedicks_data[non_main_bl_mask]
         
@@ -143,7 +142,8 @@ def analyze_benedicks_portfolio(file):
         bl_code_summary = {}
 
         for _, row in filtered_data.iterrows():
-            balance = parse_balance(row.iloc[9])
+            # CORRECTED: Use column 10 for "Balance"
+            balance = parse_balance(row.iloc[10])
             if balance <= 0: continue
 
             appn = str(row.iloc[2]).upper()
@@ -178,7 +178,6 @@ def analyze_all_personal_funding(file):
 
         if benedicks_data.empty: return None, "No Benedicks/Denovellis entries found", []
 
-        # Exclude managed BL codes (BL12200 and the selected main BL code like BL16200)
         exclude_mask = benedicks_data.iloc[:, 8].astype(str).str.contains(f'BL12200|{selected_bl}', na=False, regex=True)
         filtered_data = benedicks_data[~exclude_mask]
 
@@ -186,7 +185,8 @@ def analyze_all_personal_funding(file):
 
         bl_code_analysis = {}
         for _, row in filtered_data.iterrows():
-            balance = parse_balance(row.iloc[9])
+            # CORRECTED: Use column 10 for "Balance"
+            balance = parse_balance(row.iloc[10])
             if balance <= 0: continue
             
             bl_code = str(row.iloc[8])
@@ -228,15 +228,23 @@ def format_analysis_for_ai(extracted_data, benedicks_data, total_balance, monthl
 def call_google_ai_api(user_message, context, api_key):
     if not api_key: return "The Google AI API key is not configured. Please add it to the script."
     
-    system_prompt = f"""You are a Budget and Financial Management (BFM) AI Assistant specializing in Navy appropriations. 
-    Analyze this data and answer the user's question. Current analysis context: {json.dumps(context, indent=2)}.
-    Keep responses concise and actionable."""
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    headers = {'Content-Type': 'application/json'}
-    data = { "contents": [{"parts": [{"text": f"{system_prompt}\n\nUser: {user_message}"}]}] }
+    # CORRECTED: Helper function to convert datetime objects for JSON
+    def json_converter(o):
+        if isinstance(o, (datetime, date)):
+            return o.isoformat()
 
     try:
+        # CORRECTED: Use the json_converter in the dumps call
+        api_context_json = json.dumps(context, indent=2, default=json_converter)
+        
+        system_prompt = f"""You are a Budget and Financial Management (BFM) AI Assistant specializing in Navy appropriations. 
+        Analyze this data and answer the user's question. Current analysis context: {api_context_json}.
+        Keep responses concise and actionable."""
+        
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+        headers = {'Content-Type': 'application/json'}
+        data = { "contents": [{"parts": [{"text": f"{system_prompt}\n\nUser: {user_message}"}]}] }
+
         response = requests.post(url, headers=headers, json=data, timeout=30)
         response.raise_for_status()
         result = response.json()
@@ -245,6 +253,8 @@ def call_google_ai_api(user_message, context, api_key):
         return f"API Error: {e}"
     except (KeyError, IndexError):
         return "Received an unexpected response from the AI. Please try again."
+    except Exception as e:
+        return f"An unexpected error occurred: {e}"
 
 # --- Session State Initialization ---
 if 'extracted_data' not in st.session_state: st.session_state.extracted_data = None
@@ -255,14 +265,12 @@ if 'analysis_context' not in st.session_state: st.session_state.analysis_context
 
 # --- Main Application ---
 if uploaded_file:
-    # Auto-extract main analysis data when file/BL code changes
     if st.session_state.last_bl_code != selected_bl:
         extracted_data, message, _ = extract_vla_data(uploaded_file, selected_bl)
         st.session_state.extracted_data = extracted_data
         st.session_state.last_bl_code = selected_bl
         st.info(message)
     
-    # Personal Funding Analysis Section
     if enable_personal_funding:
         st.markdown("### 💼 Complete Personal Funding Analysis (Other Departments)")
         st.info(f"💡 Analyzing all projects where you are PM, excluding your main department ({selected_bl}) and managed funds (BL12200).")
@@ -279,7 +287,6 @@ if uploaded_file:
         else:
             st.warning(personal_message)
 
-    # Benedicks Portfolio Analysis Section
     if enable_pm_analysis:
         st.markdown("### 👨‍💼 Benedicks/Denovellis External Portfolio Analysis")
         benedicks_analysis, benedicks_message, _ = analyze_benedicks_portfolio(uploaded_file)
