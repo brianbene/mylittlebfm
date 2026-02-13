@@ -168,6 +168,39 @@ def generate_bl_comprehensive_report(context):
         if isinstance(o, (datetime, date, timedelta)):
             return str(o)
 
+    # Helper function to format chargeable objects
+    def format_chargeable_objects(objects):
+        if not objects:
+            return "No chargeable objects with positive balances were found."
+        
+        formatted = ""
+        for i, obj in enumerate(objects, 1):
+            formatted += f"{i}. **{obj.get('description', 'N/A')}**: ${obj.get('balance', 0):,.2f}\n"
+        return formatted
+    
+    # Helper function to determine urgency level
+    def get_urgency_level(appn_type, ctx):
+        balance = ctx.get('appropriations', {}).get(appn_type, 0)
+        if balance == 0:
+            return "N/A - No funds"
+        
+        if appn_type == 'OMN':
+            return "🔴 HIGH - Expires end of current FY"
+        elif appn_type == 'OPN':
+            if balance > 100000:
+                return "🟡 MEDIUM - 2-year funds, plan execution carefully"
+            else:
+                return "🟢 LOW - Adequate time for execution"
+        else:  # SCN
+            return "🟢 LOW - 5-year funds, long-term planning horizon"
+    
+    # Pre-calculate values for the prompt
+    chargeable_objects_text = format_chargeable_objects(context.get('top_chargeable_objects', []))
+    omn_urgency = get_urgency_level('OMN', context)
+    opn_urgency = get_urgency_level('OPN', context)
+    scn_urgency = get_urgency_level('SCN', context)
+    hold_percentage = (context.get('status_breakdown', {}).get('HOLD', 0) / context.get('total_balance', 1) * 100) if context.get('total_balance', 0) > 0 else 0
+
     context_json = json.dumps(context, indent=2, default=json_converter)
     
     system_prompt = f"""You are a Senior Budget & Financial Management (BFM) Analyst for the Department of the Navy. You have been tasked with creating a comprehensive financial analysis report for BL Code {context.get('bl_code', 'N/A')}.
@@ -208,7 +241,7 @@ Generate a detailed, professional financial analysis report in Markdown format. 
 ### Funding Status Breakdown
 - **Funds on HOLD:** ${context.get('status_breakdown', {}).get('HOLD', 0):,.2f}
 - **Funds RELEASED:** ${context.get('status_breakdown', {}).get('REL', 0):,.2f}
-- **Percentage on Hold:** {(context.get('status_breakdown', {}).get('HOLD', 0) / context.get('total_balance', 1) * 100) if context.get('total_balance', 0) > 0 else 0:.1f}%
+- **Percentage on Hold:** {hold_percentage:.1f}%
 
 [Analyze what this funding distribution means - is the HOLD percentage concerning? What actions should be taken?]
 
@@ -233,7 +266,7 @@ Generate a detailed, professional financial analysis report in Markdown format. 
 
 The following are the top 5 chargeable objects by available balance:
 
-{self._format_chargeable_objects(context.get('top_chargeable_objects', []))}
+{chargeable_objects_text}
 
 ### Analysis
 [Analyze the distribution of funds across these objects. Are funds concentrated in a few large efforts or distributed? What does this mean for risk management?]
@@ -245,17 +278,17 @@ The following are the top 5 chargeable objects by available balance:
 ### OMN (Operations & Maintenance)
 - **Balance:** ${context.get('appropriations', {}).get('OMN', 0):,.2f}
 - **Expiration:** End of FY{context.get('fiscal_year', '2025')} (September 30)
-- **Urgency Level:** {self._get_urgency_level('OMN', context)}
+- **Urgency Level:** {omn_urgency}
 
 ### OPN (Other Procurement)
 - **Balance:** ${context.get('appropriations', {}).get('OPN', 0):,.2f}
 - **Expiration:** End of FY{int(context.get('fiscal_year', 2025)) + 2} (2-year money)
-- **Urgency Level:** {self._get_urgency_level('OPN', context)}
+- **Urgency Level:** {opn_urgency}
 
 ### SCN (Shipbuilding & Conversion)
 - **Balance:** ${context.get('appropriations', {}).get('SCN', 0):,.2f}
 - **Expiration:** End of FY{int(context.get('fiscal_year', 2025)) + 4} (5-year money)
-- **Urgency Level:** {self._get_urgency_level('SCN', context)}
+- **Urgency Level:** {scn_urgency}
 
 [Provide strategic guidance on which appropriation to prioritize for spending based on expiration dates and color of money rules]
 
@@ -303,45 +336,6 @@ The following are the top 5 chargeable objects by available balance:
 **Report Prepared By:** BFM AI Assistant  
 **For Questions Contact:** Branch Financial Manager
 """
-
-    # Helper function to format chargeable objects
-    def _format_chargeable_objects(objects):
-        if not objects:
-            return "No chargeable objects with positive balances were found."
-        
-        formatted = ""
-        for i, obj in enumerate(objects, 1):
-            formatted += f"{i}. **{obj.get('description', 'N/A')}**: ${obj.get('balance', 0):,.2f}\n"
-        return formatted
-    
-    # Helper function to determine urgency level
-    def _get_urgency_level(appn_type, ctx):
-        balance = ctx.get('appropriations', {}).get(appn_type, 0)
-        if balance == 0:
-            return "N/A - No funds"
-        
-        if appn_type == 'OMN':
-            # OMN expires same fiscal year - high urgency
-            return "🔴 HIGH - Expires end of current FY"
-        elif appn_type == 'OPN':
-            if balance > 100000:
-                return "🟡 MEDIUM - 2-year funds, plan execution carefully"
-            else:
-                return "🟢 LOW - Adequate time for execution"
-        else:  # SCN
-            return "🟢 LOW - 5-year funds, long-term planning horizon"
-    
-    # Inject helper functions into the prompt by replacing placeholders
-    system_prompt = system_prompt.replace(
-        '{self._format_chargeable_objects(context.get(\'top_chargeable_objects\', []))}',
-        _format_chargeable_objects(context.get('top_chargeable_objects', []))
-    )
-    
-    for appn_type in ['OMN', 'OPN', 'SCN']:
-        system_prompt = system_prompt.replace(
-            f'{{self._get_urgency_level(\'{appn_type}\', context)}}',
-            _get_urgency_level(appn_type, context)
-        )
 
     # Call Perplexity API
     url = "https://api.perplexity.ai/chat/completions"
