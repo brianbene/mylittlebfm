@@ -344,7 +344,7 @@ The following are the top 5 chargeable objects by available balance:
         'Content-Type': 'application/json'
     }
     data = {
-        "model": "llama-3.1-sonar-large-128k-online",
+        "model": "llama-3.1-sonar-large-128k-chat",
         "messages": [
             {
                 "role": "system",
