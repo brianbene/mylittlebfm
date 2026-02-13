@@ -94,6 +94,9 @@ def parse_balance(value):
 
 def extract_vla_data(file, target_bl):
     try:
+        # Reset file pointer to beginning (important for Streamlit file uploads)
+        file.seek(0)
+        
         # FIXED: Changed header from 2 to 1 to get correct column names
         df = pd.read_excel(file, sheet_name=0, header=1) 
         
@@ -365,11 +368,21 @@ for key in ['extracted_data', 'last_bl_code', 'top_cos']:
 
 # --- Main App Body ---
 if uploaded_file:
+    # Extract data when file is uploaded or BL code changes
     if st.session_state.last_bl_code != selected_bl or st.session_state.extracted_data is None:
         with st.spinner(f"Extracting data for {selected_bl}..."):
             st.session_state.extracted_data, message, st.session_state.top_cos = extract_vla_data(uploaded_file, selected_bl)
             st.session_state.last_bl_code = selected_bl
         
+        if st.session_state.extracted_data:
+            st.success(message)
+        else:
+            st.error(message)
+    
+    # Add a manual refresh button
+    if st.button("🔄 Refresh Data"):
+        with st.spinner(f"Re-extracting data for {selected_bl}..."):
+            st.session_state.extracted_data, message, st.session_state.top_cos = extract_vla_data(uploaded_file, selected_bl)
         if st.session_state.extracted_data:
             st.success(message)
         else:
@@ -383,7 +396,14 @@ def get_default_structure():
     return {'balance': 0.0, 'L': 0.0, 'M': 0.0, 'T': 0.0, 'statuses': {'HOLD': 0.0, 'REL': 0.0, 'CRTD': 0.0}}
 
 defaults = {'omn': get_default_structure(), 'opn': get_default_structure(), 'scn': get_default_structure()}
-data_source = st.session_state.get('extracted_data') or defaults
+
+# Get data source - use extracted data if available, otherwise defaults
+if st.session_state.get('extracted_data') is not None:
+    data_source = st.session_state.extracted_data
+    # Show what we extracted
+    st.info(f"📊 Loaded: OMN ${data_source['omn']['balance']:,.2f} | OPN ${data_source['opn']['balance']:,.2f} | SCN ${data_source['scn']['balance']:,.2f}")
+else:
+    data_source = defaults
 
 col1, col2, col3 = st.columns(3)
 with col1:
