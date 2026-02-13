@@ -97,14 +97,8 @@ def extract_vla_data(file, target_bl):
         # FIXED: Changed header from 2 to 1 to get correct column names
         df = pd.read_excel(file, sheet_name=0, header=1) 
         
-        # Debug: Show what we're working with
-        st.write(f"DEBUG: Total rows in Excel: {len(df)}")
-        st.write(f"DEBUG: Column names: {list(df.columns)[:15]}")
-        
         # FIXED: Work Ctr is now at index 8 (which is correct based on our analysis)
         bl_data = df[df.iloc[:, 8].astype(str).str.contains(target_bl, na=False)]
-        
-        st.write(f"DEBUG: Found {len(bl_data)} rows for {target_bl}")
         
         if bl_data.empty: 
             return None, f"No data found for {target_bl}", []
@@ -130,7 +124,7 @@ def extract_vla_data(file, target_bl):
             # Note: You may need to adjust this mapping based on your actual appropriation types
             if 'SCN' in appn:
                 appn_key = 'scn'
-            elif 'RDT&E' in appn or 'RDTE' in appn:
+            elif 'RDT&E' in appn or 'RDTE' in appn or 'OPN' in appn:
                 appn_key = 'opn'  # RDT&E is typically 2-year money (OPN)
             elif 'OMN' in appn:
                 appn_key = 'omn'
@@ -148,14 +142,11 @@ def extract_vla_data(file, target_bl):
                     
         top_cos = sorted(chargeable_objects, key=lambda x: x['balance'], reverse=True)[:5]
         
-        # Debug output
-        st.write(f"DEBUG: Total extracted - OMN: ${result['omn']['balance']:,.2f}, OPN: ${result['opn']['balance']:,.2f}, SCN: ${result['scn']['balance']:,.2f}")
-        
-        return result, f"✅ Extracted data for {target_bl}", top_cos
+        return result, f"✅ Extracted data for {target_bl}: OMN ${result['omn']['balance']:,.2f} | OPN ${result['opn']['balance']:,.2f} | SCN ${result['scn']['balance']:,.2f}", top_cos
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        st.error(f"Full error details:\n{error_details}")
+        st.error(f"Error extracting data: {str(e)}")
         return None, f"❌ Error extracting VLA data: {str(e)}", []
 
 def generate_bl_comprehensive_report(context):
@@ -375,9 +366,16 @@ for key in ['extracted_data', 'last_bl_code', 'top_cos']:
 # --- Main App Body ---
 if uploaded_file:
     if st.session_state.last_bl_code != selected_bl or st.session_state.extracted_data is None:
-        st.session_state.extracted_data, message, st.session_state.top_cos = extract_vla_data(uploaded_file, selected_bl)
-        st.session_state.last_bl_code = selected_bl
-        st.info(message)
+        with st.spinner(f"Extracting data for {selected_bl}..."):
+            st.session_state.extracted_data, message, st.session_state.top_cos = extract_vla_data(uploaded_file, selected_bl)
+            st.session_state.last_bl_code = selected_bl
+        
+        if st.session_state.extracted_data:
+            st.success(message)
+        else:
+            st.error(message)
+else:
+    st.warning("⬆️ Please upload a VLA Excel file to begin analysis")
 
 st.markdown(f"--- \n### 💰 Main Analysis for {selected_bl}")
 
